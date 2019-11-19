@@ -492,7 +492,7 @@ export const matrixCreateRoomEpic = (
             take(1),
             // if there's already a room state for address and it's present in matrix, skip
             filter(
-              ([, state]) => !get(state, ['transport', 'matrix', 'rooms', action.meta.address, 0]),
+              ([, state]) => !get(state.transport, ['matrix', 'rooms', action.meta.address, 0]),
             ),
             // else, create a room, invite known user and dispatch the respective MatrixRoomAction
             // to store it in state
