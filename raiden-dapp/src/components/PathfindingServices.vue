@@ -67,27 +67,13 @@
             <v-tooltip bottom>
               <template #activator="{ on }">
                 <span v-on="on">
-                  {{
-                    $t('pathfinding-services.price', {
-                      amount: truncate(
-                        convertToUnits(item.price, token(item.token).decimals),
-                        8
-                      ),
-                      symbol: token(item.token).symbol
-                    })
-                  }}
+                  {{ item.price | displayFormat(token(item.token).decimals) }}
+                  {{ token(item.token).symbol || '' }}
                 </span>
               </template>
               <span>
-                {{
-                  $t('pathfinding-services.price', {
-                    amount: convertToUnits(
-                      item.price,
-                      token(item.token).decimals
-                    ),
-                    symbol: token(item.token).symbol
-                  })
-                }}
+                {{ item.price | toUnits(token(item.token).decimals) }}
+                {{ token(item.token).symbol || '' }}
               </span>
             </v-tooltip>
           </template>
@@ -102,7 +88,6 @@ import { Component, Emit, Vue } from 'vue-property-decorator';
 import { RaidenPFS } from 'raiden-ts';
 
 import { Token } from '@/model/types';
-import { BalanceUtils } from '@/utils/balance-utils';
 import Filters from '@/filters';
 import Spinner from '@/components/Spinner.vue';
 
@@ -116,7 +101,6 @@ export default class PathfindingServices extends Vue {
   selected: RaidenPFS[] = [];
   services: RaidenPFS[] = [];
 
-  convertToUnits = BalanceUtils.toUnits;
   truncate = Filters.truncate;
 
   mounted() {
@@ -129,12 +113,12 @@ export default class PathfindingServices extends Vue {
       {
         text: this.$t('pathfinding-services.headers.rtt') as string,
         value: 'rtt',
-        align: 'right'
+        align: 'left'
       },
       {
         text: this.$t('pathfinding-services.headers.price') as string,
         value: 'price',
-        align: 'right'
+        align: 'left'
       }
     ];
     this.fetchServices();
@@ -205,6 +189,7 @@ export default class PathfindingServices extends Vue {
     &.v-data-table {
       background-color: transparent !important;
     }
+
     ::v-deep tr:hover {
       background: $primary-disabled-color !important;
     }
@@ -212,9 +197,10 @@ export default class PathfindingServices extends Vue {
     ::v-deep .v-icon {
       color: $primary-color;
     }
+
     ::v-deep th {
-      color: rgba($color-white, 0.5);
-      font-size: 15px;
+      color: #646464 !important;
+      font-size: 16px;
     }
   }
 }

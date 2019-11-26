@@ -51,11 +51,8 @@
     }
   },
   "find-routes": {
-    "busy-title": "Searching available routes",
-    "title": "Select a route",
-    "description": "Mediators require a small fee to forward your token transfer. Please select a route below:",
     "hops": "Hops",
-    "fees-in": "Fees in {token}",
+    "price": "Price",
     "error": {
       "title": "Oops, something went wrong"
     }
@@ -174,11 +171,15 @@
   "application": {
     "privacy-policy": "Privacy Policy, Disclaimer & Imprint"
   },
+  "mint-deposit-dialog": {
+    "button": "Mint and deposit",
+    "available": "Available {currency} to pay for on-chain transaction: {balance} {currency}",
+    "error": "The mint and deposit operation failed."
+  },
   "transfer": {
     "deposit-button": "Deposit",
     "channel-button": "Channels",
     "capacity-label": "Capacity",
-    "capacity-amount": "{capacity} {token}",
     "recipient-label": "Recipient",
     "amount-label": "Amount",
     "amount-placeholder": "Specify amount...",
@@ -189,15 +190,17 @@
     },
     "steps": {
       "request-route": {
-        "title": "Request Route"
+        "title": "Request Route",
+        "udc-description": "{token} Balance",
+        "in-progress": "Sign the message to pay for the route request",
+        "done": "Route request payment complete"
       },
       "select-route": {
         "title": "Select Route"
       },
       "confirm-transfer": {
         "title": "Confirm Transfer",
-        "total-amount": "Total Amount",
-        "token-amount": "{totalAmount} {token}"
+        "total-amount": "Total Amount"
       },
       "call-to-action": {
         "1": "Pay Route Request",
@@ -278,9 +281,8 @@
   "pathfinding-services": {
     "title": "Select Pathfinding Service",
     "rtt": "{time} ms",
-    "price": "{amount} {symbol}",
     "headers": {
-      "host": "Host",
+      "host": "PFS",
       "rtt": "Ping",
       "price": "Price"
     }

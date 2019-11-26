@@ -97,7 +97,7 @@ import { makeSecret, raidenSentTransfer, getSecrethash, makePaymentId } from './
 import { pathFind, pathFound, pathFindFailed, pfsListUpdated } from './path/actions';
 import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './path/types';
 import { pfsListInfo } from './path/utils';
-import { Address, PrivateKey, Secret, Storage, Hash, UInt, decode } from './utils/types';
+import { Address, PrivateKey, Secret, Storage, Hash, UInt, decode, isntNil } from './utils/types';
 import { patchSignSend } from './utils/ethers';
 import { losslessParse } from './utils/data';
 
@@ -247,8 +247,8 @@ export class Raiden {
               { acc: { ...acc, [secrethash]: sent }, changed: sent },
         { acc: {} },
       ),
-      filter(({ changed }) => !!changed), // filter out if reference didn't change from last emit
-      map(({ changed }) => changed!), // get the changed object only
+      pluck('changed'),
+      filter(isntNil), // filter out if reference didn't change from last emit
       // from here, we get SentTransfer objects which changed from previous state (all on first)
       map(raidenSentTransfer),
     );
@@ -257,7 +257,6 @@ export class Raiden {
 
     this.getTokenInfo = memoize(async function(this: Raiden, token: string) {
       if (!Address.is(token)) throw new Error('Invalid address');
-      if (!(token in this.state.tokens)) throw new Error(`token "${token}" not monitored`);
       const tokenContract = this.deps.getTokenContract(token);
       const [totalSupply, decimals, name, symbol] = await Promise.all([
         tokenContract.functions.totalSupply(),
@@ -592,7 +591,6 @@ export class Raiden {
   public async getTokenBalance(token: string, address?: string): Promise<BigNumber> {
     address = address || this.address;
     if (!Address.is(address) || !Address.is(token)) throw new Error('Invalid address');
-    if (!(token in this.state.tokens)) throw new Error(`token "${token}" not monitored`);
     const tokenContract = this.deps.getTokenContract(token);
 
     return tokenContract.functions.balanceOf(address);
@@ -1041,7 +1039,7 @@ export class Raiden {
   public async depositToUDC(amount: BigNumberish): Promise<Hash> {
     const depositAmount = bigNumberify(amount);
 
-    if (depositAmount.isZero()) throw new Error('Please deposit a positive amount.');
+    if (!depositAmount.gt(Zero)) throw new Error('Please deposit a positive amount.');
 
     const { userDepositContract, address } = this.deps;
 
