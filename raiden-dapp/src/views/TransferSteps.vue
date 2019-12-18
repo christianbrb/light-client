@@ -119,7 +119,7 @@
               <v-col cols="10">
                 <find-routes
                   v-if="step === 2"
-                  :token="udcToken"
+                  :token="token"
                   :routes="routes"
                   :pfs-url="selectedPfs.url"
                   @select="setRoute($event)"
@@ -174,33 +174,43 @@
       v-if="step === 1"
       :value="pfsFeesConfirmed"
       class="confirmation-overlay"
+      :class="{ 'v-overlay--dark': freePfs && pfsFeesConfirmed }"
     >
       <spinner v-if="!pfsFeesPaid" />
       <checkmark v-else class="confirmation-overlay__checkmark" />
 
-      <h2 v-if="!pfsFeesPaid">
+      <h2 v-if="!pfsFeesPaid && !freePfs">
         {{ this.$t('transfer.steps.request-route.in-progress') }}
+      </h2>
+      <h2 v-else-if="freePfs">
+        {{ this.$t('transfer.steps.request-route.searching-for-route') }}
       </h2>
       <h2 v-else>{{ this.$t('transfer.steps.request-route.done') }}</h2>
     </v-overlay>
 
-    <stepper
-      :display="processingTransfer"
-      :steps="steps"
-      :done-step="doneStep"
-      :done="transferDone"
-    ></stepper>
+    <v-dialog
+      v-model="processingTransfer"
+      max-width="310"
+      transition="scale-transition"
+    >
+      <transfer-progress-dialog
+        :in-progress="!transferDone"
+        :error="error"
+        @dismiss="dismissProgress"
+      ></transfer-progress-dialog>
+    </v-dialog>
 
     <error-screen
+      v-if="!processingTransfer"
       :description="error"
-      :title="errorTitle"
+      :title="$t('transfer.error.title')"
       :button-label="$t('transfer.error.button')"
       @dismiss="error = ''"
     ></error-screen>
 
     <action-button
       :enabled="continueBtnEnabled"
-      :text="$t(`transfer.steps.call-to-action.${step}`)"
+      :text="callToActionText"
       sticky
       arrow
       @click="handleStep()"
@@ -212,10 +222,10 @@
 <script lang="ts">
 import { Component, Mixins } from 'vue-property-decorator';
 import { RaidenPFS } from 'raiden-ts';
-import { BigNumber } from 'ethers/utils';
+import { BigNumber, bigNumberify } from 'ethers/utils';
 
 import { BalanceUtils } from '@/utils/balance-utils';
-import { Token, Route, emptyDescription, StepDescription } from '@/model/types';
+import { Token, Route } from '@/model/types';
 import NavigationMixin from '@/mixins/navigation-mixin';
 import BlockieMixin from '@/mixins/blockie-mixin';
 import PathfindingServices from '@/components/PathfindingServices.vue';
@@ -229,9 +239,12 @@ import ErrorScreen from '@/components/ErrorScreen.vue';
 import { Zero } from 'ethers/constants';
 import { getAddress, getAmount } from '@/utils/query-params';
 import AddressUtils from '@/utils/address-utils';
+import Filter from '@/filters';
+import TransferProgressDialog from '@/components/TransferProgressDialog.vue';
 
 @Component({
   components: {
+    TransferProgressDialog,
     PathfindingServices,
     ActionButton,
     FindRoutes,
@@ -252,18 +265,48 @@ export default class TransferSteps extends Mixins(
   routes: Route[] = [];
   pfsFeesConfirmed: boolean = false;
   pfsFeesPaid: boolean = false;
+  freePfs: boolean = false;
   showMintDeposit: boolean = false;
   mediationFeesConfirmed: boolean = false;
   processingTransfer: boolean = false;
   transferDone: boolean = false;
-  errorTitle: string = '';
   error: string = '';
-  steps: StepDescription[] = [];
-  doneStep: StepDescription = emptyDescription();
   udcCapacity: BigNumber = Zero;
 
   amount: string = '';
   target: string = '';
+
+  get callToActionText() {
+    const amountLocalized = `transfer.steps.call-to-action.${this.step}.amount`;
+    if (this.step === 1 && this.selectedPfs) {
+      return this.$t(amountLocalized, {
+        amount: Filter.displayFormat(
+          this.selectedPfs.price as BigNumber,
+          this.udcToken.decimals
+        ),
+        symbol: this.udcToken.symbol
+      });
+    }
+
+    if (this.step === 2 && this.selectedRoute) {
+      return this.$t(amountLocalized, {
+        amount: Filter.displayFormat(
+          this.selectedRoute.fee as BigNumber,
+          this.token.decimals
+        ),
+        symbol: this.token.symbol
+      });
+    }
+
+    if (this.step === 3) {
+      return this.$t(amountLocalized, {
+        amount: Filter.displayFormat(this.totalAmount, this.token.decimals),
+        symbol: this.token.symbol
+      });
+    }
+
+    return this.$t(`transfer.steps.call-to-action.${this.step}.default`);
+  }
 
   private updateUDCCapacity() {
     this.$raiden.getUDCCapacity().then(value => (this.udcCapacity = value));
@@ -287,6 +330,27 @@ export default class TransferSteps extends Mixins(
 
     if (typeof this.token.decimals !== 'number') {
       this.navigateToHome();
+      return;
+    }
+
+    const directRoutes = await this.$raiden.directRoute(
+      address,
+      this.target,
+      BalanceUtils.parse(this.amount, this.token.decimals)
+    );
+
+    if (directRoutes) {
+      const [route] = directRoutes;
+
+      this.selectedRoute = {
+        key: 0,
+        fee: Zero,
+        displayFee: '0',
+        path: [...route.path],
+        hops: 0
+      };
+
+      this.transfer();
     }
   }
 
@@ -310,7 +374,6 @@ export default class TransferSteps extends Mixins(
     );
 
     if (fetchedRoutes) {
-      // Convert to displayable Route type
       this.routes = fetchedRoutes.map(
         ({ path, fee }, index: number) =>
           ({
@@ -320,6 +383,13 @@ export default class TransferSteps extends Mixins(
             path
           } as Route)
       );
+
+      const [route] = this.routes;
+
+      if (route && route.fee.isZero()) {
+        this.selectedRoute = route;
+        this.transfer();
+      }
     }
   }
 
@@ -393,8 +463,13 @@ export default class TransferSteps extends Mixins(
     return transfer.add(this.selectedRoute!.fee);
   }
 
-  setPFS(pfs: RaidenPFS) {
+  setPFS(payload: [RaidenPFS, boolean]) {
+    const [pfs, single] = payload;
     this.selectedPfs = pfs;
+    this.freePfs = bigNumberify(pfs.price).isZero();
+    if (pfs && single && this.freePfs) {
+      this.handleStep();
+    }
   }
 
   setRoute(route: Route) {
@@ -404,11 +479,6 @@ export default class TransferSteps extends Mixins(
   async transfer() {
     const { address, decimals } = this.token;
     const { path, fee } = this.selectedRoute!;
-    this.steps = [
-      (this.$t('transfer.steps.transfer') as any) as StepDescription
-    ];
-    this.doneStep = (this.$t('transfer.steps.done') as any) as StepDescription;
-    this.errorTitle = this.$t('transfer.error.title') as string;
 
     try {
       this.processingTransfer = true;
@@ -422,23 +492,54 @@ export default class TransferSteps extends Mixins(
       this.transferDone = true;
       this.dismissProgress();
     } catch (e) {
-      this.processingTransfer = false;
       this.error = e.message;
     }
   }
 
-  private dismissProgress() {
+  private dismissProgress(delay: number = 3000) {
     setTimeout(() => {
+      this.error = '';
       this.processingTransfer = false;
       this.transferDone = false;
       this.navigateToSelectTransferTarget(this.token.address);
-    }, 2000);
+    }, delay);
   }
 }
 </script>
 
 <style lang="scss" scoped>
 @import '../scss/colors';
+
+.confirmation-overlay {
+  text-align: center;
+
+  &.v-overlay {
+    &--active {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      backdrop-filter: blur(4px);
+      background-color: rgba($color-white, 0.15);
+      border-bottom-left-radius: 10px;
+      border-bottom-right-radius: 10px;
+    }
+
+    &--dark {
+      background-color: $card-background;
+    }
+  }
+
+  ::v-deep {
+    .spinner {
+      margin: 2em;
+    }
+  }
+
+  &__checkmark {
+    margin: 2em;
+  }
+}
 
 .transfer-steps {
   background: transparent !important;
@@ -457,8 +558,23 @@ export default class TransferSteps extends Mixins(
   }
 
   &__step {
-    ::v-deep .v-stepper__label {
-      display: block !important;
+    ::v-deep {
+      .v-stepper {
+        &__label {
+          display: block !important;
+        }
+
+        &__step {
+          &__step {
+            height: 12px;
+            min-width: 12px;
+            width: 12px;
+            margin-top: 6px;
+            background: transparent !important;
+            border: 2px solid $secondary-text-color !important;
+          }
+        }
+      }
     }
 
     &__content {
@@ -466,24 +582,21 @@ export default class TransferSteps extends Mixins(
     }
 
     &.active {
-      ::v-deep .v-stepper__step__step {
-        border-color: $primary-color !important;
-        background: $primary-color !important;
-      }
+      ::v-deep {
+        .v-stepper {
+          &__step {
+            &__step {
+              border-color: $primary-color !important;
+              background: $primary-color !important;
+            }
+          }
 
-      ::v-deep .v-stepper__label {
-        color: $primary-color;
-        font-weight: bold;
+          &__label {
+            color: $primary-color;
+            font-weight: bold;
+          }
+        }
       }
-    }
-
-    ::v-deep .v-stepper__step__step {
-      height: 12px;
-      min-width: 12px;
-      width: 12px;
-      margin-top: 6px;
-      background: transparent !important;
-      border: 2px solid #646464 !important;
     }
   }
 
@@ -542,31 +655,12 @@ export default class TransferSteps extends Mixins(
   }
 }
 
-.confirmation-overlay {
-  text-align: center;
-
-  &.v-overlay--active {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    backdrop-filter: blur(4px);
-    background-color: rgba($color-white, 0.15);
-    border-bottom-left-radius: 10px;
-    border-bottom-right-radius: 10px;
+.v-dialog {
+  &__content {
+    &--active {
+      background-color: rgba($color-white, 0.15);
+      backdrop-filter: blur(4px);
+    }
   }
-
-  & ::v-deep .spinner {
-    margin: 2em;
-  }
-
-  &__checkmark {
-    margin: 2em;
-  }
-}
-
-.v-dialog__content--active {
-  background-color: rgba($color-white, 0.15);
-  backdrop-filter: blur(4px);
 }
 </style>

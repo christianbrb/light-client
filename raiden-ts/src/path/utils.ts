@@ -50,6 +50,9 @@ const serviceRegistryToken = memoize(
     serviceRegistryContract.functions.token() as Promise<Address>,
 );
 
+// match an https:// or domain-only url
+const urlRegex = /^(?:https:\/\/)?[^\s\/$.?#&"']+\.[^\s\/$?#&"']+$/;
+
 /**
  * Returns a cold observable which fetch PFS info & validate for a given server address or URL
  *
@@ -69,7 +72,7 @@ export function pfsInfo(
     network_info: t.type({
       // literals will fail if trying to decode anything different from these constants
       chain_id: t.literal(network.chainId),
-      registry_address: t.literal(contractsInfo.TokenNetworkRegistry.address),
+      token_network_registry_address: t.literal(contractsInfo.TokenNetworkRegistry.address),
     }),
     operator: t.string,
     payment_address: Address,
@@ -84,13 +87,12 @@ export function pfsInfo(
     withLatestFrom(config$),
     mergeMap(([url, { httpTimeout }]) => {
       if (!url) throw new Error(`Empty URL: ${url}`);
-      else if (url.includes('://') && !url.startsWith('https://'))
-        throw new Error(`Invalid URL schema: ${url}`);
+      else if (!urlRegex.test(url)) throw new Error(`Invalid URL: ${url}`);
       // default to https for domain-only urls
-      else if (!url.includes('://')) url = `https://${url}`;
+      else if (!url.startsWith('https://')) url = `https://${url}`;
 
       const start = Date.now();
-      return fromFetch(`${url}/api/v1/info`).pipe(
+      return fromFetch(url + '/api/v1/info').pipe(
         timeout(httpTimeout),
         mergeMap(
           async res =>
@@ -118,17 +120,20 @@ export function pfsInfo(
  * Throws if no server can be validated, meaning either there's none in the current network or
  * we're out-of-sync (outdated or ahead of PFS's deployment network version).
  *
- * @param pfsList - Array of PFS addresses, as notified by pfsListUpdated action
+ * @param pfsList - Array of PFS addresses or URLs
  * @param deps - RaidenEpicDeps array
  * @returns Observable of online, validated & sorted PFS info array
  */
-export function pfsListInfo(pfsList: readonly Address[], deps: RaidenEpicDeps): Observable<PFS[]> {
+export function pfsListInfo(
+  pfsList: readonly (string | Address)[],
+  deps: RaidenEpicDeps,
+): Observable<PFS[]> {
   return from(pfsList).pipe(
     mergeMap(
-      addr =>
-        pfsInfo(addr, deps).pipe(
+      addrOrUrl =>
+        pfsInfo(addrOrUrl, deps).pipe(
           catchError(err => {
-            console.warn(`Error trying to fetch PFS info for "${addr}" - ignoring:`, err);
+            console.warn(`Error trying to fetch PFS info for "${addrOrUrl}" - ignoring:`, err);
             return EMPTY;
           }),
         ),

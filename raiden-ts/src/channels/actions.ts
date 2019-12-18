@@ -28,7 +28,7 @@ export const tokenMonitored = createStandardAction('tokenMonitored')<{
 
 /* Request a channel to be opened with meta={ tokenNetwork, partner } and payload.settleTimeout */
 export const channelOpen = createStandardAction('channelOpen')<
-  { settleTimeout?: number },
+  { settleTimeout?: number; subkey?: boolean },
   ChannelId
 >();
 
@@ -45,9 +45,9 @@ export const channelOpened = createStandardAction('channelOpened')<
 >();
 
 /* A channelOpen request action (with meta: ChannelId) failed with payload=Error */
-export const channelOpenFailed = createStandardAction('channelOpenFailed').map(
-  (payload: Error, meta: ChannelId) => ({ payload, error: true, meta }),
-);
+export const channelOpenFailed = createStandardAction(
+  'channelOpenFailed',
+).map((payload: Error, meta: ChannelId) => ({ payload, error: true, meta }));
 
 /* Channel with meta:ChannelId + payload.id should be monitored */
 export const channelMonitored = createStandardAction('channelMonitored')<
@@ -57,7 +57,7 @@ export const channelMonitored = createStandardAction('channelMonitored')<
 
 /* Request a payload.deposit to be made to channel meta:ChannelId */
 export const channelDeposit = createStandardAction('channelDeposit')<
-  { deposit: UInt<32> },
+  { deposit: UInt<32>; subkey?: boolean },
   ChannelId
 >();
 
@@ -68,9 +68,9 @@ export const channelDeposited = createStandardAction('channelDeposited')<
 >();
 
 /* A channelDeposit request action (with meta: ChannelId) failed with payload=Error */
-export const channelDepositFailed = createStandardAction('channelDepositFailed').map(
-  (payload: Error, meta: ChannelId) => ({ payload, error: true, meta }),
-);
+export const channelDepositFailed = createStandardAction(
+  'channelDepositFailed',
+).map((payload: Error, meta: ChannelId) => ({ payload, error: true, meta }));
 
 /* A withdraw is detected on-chain */
 export const channelWithdrawn = createStandardAction('channelWithdrawn')<
@@ -79,7 +79,10 @@ export const channelWithdrawn = createStandardAction('channelWithdrawn')<
 >();
 
 /* Request channel meta:ChannelId to be closed */
-export const channelClose = createStandardAction('channelClose')<undefined, ChannelId>();
+export const channelClose = createStandardAction('channelClose')<
+  { subkey?: boolean } | undefined,
+  ChannelId
+>();
 
 /* A close channel event is detected on-chain. Also works as 'success' for channelClose action */
 export const channelClosed = createStandardAction('channelClosed')<
@@ -88,9 +91,9 @@ export const channelClosed = createStandardAction('channelClosed')<
 >();
 
 /* A channelClose request action (with meta: ChannelId) failed with payload=Error */
-export const channelCloseFailed = createStandardAction('channelCloseFailed').map(
-  (payload: Error, meta: ChannelId) => ({ payload, error: true, meta }),
-);
+export const channelCloseFailed = createStandardAction(
+  'channelCloseFailed',
+).map((payload: Error, meta: ChannelId) => ({ payload, error: true, meta }));
 
 /* A channel meta:ChannelId becomes settleable, starting from payload.settleableBlock */
 export const channelSettleable = createStandardAction('channelSettleable')<
@@ -99,7 +102,10 @@ export const channelSettleable = createStandardAction('channelSettleable')<
 >();
 
 /* Request channel meta:ChannelId to be settled */
-export const channelSettle = createStandardAction('channelSettle')<undefined, ChannelId>();
+export const channelSettle = createStandardAction('channelSettle')<
+  { subkey?: boolean } | undefined,
+  ChannelId
+>();
 
 /* A settle channel event is detected on-chain. Also works as 'success' for channelSettle action */
 export const channelSettled = createStandardAction('channelSettled')<
@@ -108,6 +114,6 @@ export const channelSettled = createStandardAction('channelSettled')<
 >();
 
 /* A channelSettle request action (with meta: ChannelId) failed with payload=Error */
-export const channelSettleFailed = createStandardAction('channelSettleFailed').map(
-  (payload: Error, meta: ChannelId) => ({ payload, error: true, meta }),
-);
+export const channelSettleFailed = createStandardAction(
+  'channelSettleFailed',
+).map((payload: Error, meta: ChannelId) => ({ payload, error: true, meta }));

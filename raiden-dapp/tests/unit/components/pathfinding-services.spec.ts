@@ -41,7 +41,6 @@ describe('PathfindingService.vue', () => {
     return mount(PathfindingServices, {
       store,
       vuetify,
-      sync: false,
       mocks: {
         $t: (msg: string) => msg,
         $raiden
@@ -65,7 +64,7 @@ describe('PathfindingService.vue', () => {
     jest.resetAllMocks();
   });
 
-  test('user selects PFS service from available', async () => {
+  test('emit a select event when the user selects a service', async () => {
     $raiden.fetchServices.mockResolvedValueOnce([raidenPFS, raidenPFS2]);
     const wrapper = createWrapper();
     await wrapper.vm.$nextTick();
@@ -82,10 +81,10 @@ describe('PathfindingService.vue', () => {
       .trigger('click');
     await wrapper.vm.$nextTick();
     expect(wrapper.emitted().select).toBeTruthy();
-    expect(wrapper.emitted().select[0][0]).toEqual(raidenPFS);
+    expect(wrapper.emitted().select[0][0]).toEqual([raidenPFS, false]);
   });
 
-  test('the request fails with some error', async () => {
+  test('show an error message when the request for the services fails', async () => {
     $raiden.fetchServices.mockRejectedValue(new Error('there was an error'));
     const wrapper = createWrapper();
     await wrapper.vm.$nextTick();

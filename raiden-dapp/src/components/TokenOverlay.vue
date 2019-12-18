@@ -1,6 +1,6 @@
 <template>
   <v-overlay :value="show" absolute opacity="1.0" class="token-network-overlay">
-    <v-container class="container">
+    <v-container class="token-network__container">
       <v-row no-gutters justify="end">
         <v-btn icon class="token-network-overlay__close-button" @click="cancel">
           <v-icon>mdi-close</v-icon>
@@ -42,7 +42,7 @@
       </v-row>
 
       <v-row class="token-list">
-        <v-col cols="12">
+        <v-col cols="12" class="fill-height">
           <v-list
             v-for="(token, i) in tokens"
             :key="i"
@@ -136,75 +136,118 @@ export default class TokenOverlay extends Mixins(
 
 <style lang="scss" scoped>
 @import '../scss/colors';
+@import '../scss/scroll';
 
 .token-network-overlay {
   border-bottom-left-radius: 10px;
   border-bottom-right-radius: 10px;
 
-  ::v-deep .v-overlay__scrim {
-    background: linear-gradient(180deg, #050505 0%, #0a1923 100%) !important;
-  }
+  ::v-deep {
+    .v-overlay {
+      &__scrim {
+        background: linear-gradient(
+          180deg,
+          #050505 0%,
+          #0a1923 100%
+        ) !important;
+      }
 
-  ::v-deep .v-overlay__content {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 100%;
-    height: 100%;
-  }
+      &__content {
+        position: absolute;
+        top: 0;
+        right: 0;
+        width: 100%;
+        height: 100%;
+      }
+    }
 
-  ::v-deep .v-list-item {
-    padding: 0 0 0 48px;
-  }
-
-  .container {
-    padding: 0 !important;
-  }
-
-  .token-network-overlay__close-button {
-    margin: 15px;
-  }
-
-  .token-list__item-list,
-  .connect-new__item-list {
-    height: 100%;
-    background-color: transparent !important;
-    padding-bottom: 0;
-    padding-top: 0;
-
-    & ::v-deep .col-10 {
-      padding-left: 11px;
+    .v-list-item {
+      padding: 0 0 0 48px;
     }
   }
 
-  .connect-new__connect-new-token,
-  .token-network-overlay__header,
-  .token-list__token-title {
+  .token-network {
+    &__container {
+      padding: 0 !important;
+      height: 100%;
+    }
+  }
+
+  &__close-button {
+    margin: 15px;
+  }
+
+  .token-list {
+    height: calc(100% - 230px);
+
+    &__item-list {
+      overflow-y: auto;
+      @extend .themed-scrollbar;
+
+      height: 100%;
+      background-color: transparent !important;
+      padding-bottom: 0;
+      padding-top: 0;
+
+      ::v-deep {
+        .col-10 {
+          padding-left: 11px;
+        }
+      }
+    }
+
+    &__token-title {
+      font-weight: bold;
+      line-height: 20px;
+      font-size: 16px;
+    }
+
+    &__token-balance {
+      color: $color-white;
+      font-family: Roboto, sans-serif;
+      font-size: 16px;
+      font-weight: bold;
+      line-height: 20px;
+      height: 100%;
+      padding-right: 20px;
+    }
+
+    &__token-address {
+      color: #696969 !important;
+      line-height: 20px;
+      font-size: 16px;
+    }
+  }
+
+  .connect-new {
+    &__item-list {
+      height: 100%;
+      background-color: transparent !important;
+      padding-bottom: 0;
+      padding-top: 0;
+
+      ::v-deep {
+        .col-10 {
+          padding-left: 11px;
+        }
+      }
+    }
+
+    &__connect-new-token {
+      font-weight: bold;
+      line-height: 20px;
+      font-size: 16px;
+    }
+  }
+
+  &__header {
     font-weight: bold;
     line-height: 20px;
     font-size: 16px;
-  }
 
-  .token-network-overlay__header {
     color: $primary-color;
     text-transform: uppercase;
     padding-left: 58px;
-  }
-
-  .token-list__token-balance {
-    color: $color-white;
-    font-family: Roboto, sans-serif;
-    font-size: 16px;
-    font-weight: bold;
-    line-height: 20px;
-    height: 100%;
-    padding-right: 20px;
-  }
-
-  .token-list__token-address {
-    color: #696969 !important;
-    line-height: 20px;
-    font-size: 16px;
   }
 }
 </style>

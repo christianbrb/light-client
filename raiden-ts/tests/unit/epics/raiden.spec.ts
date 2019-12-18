@@ -1,6 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,@typescript-eslint/camelcase */
+import { epicFixtures } from '../fixtures';
+import { raidenEpicDeps, makeLog, makeSignature } from '../mocks';
+
 import { marbles } from 'rxjs-marbles/jest';
-import { of, from, timer, BehaviorSubject, Subject, Observable, EMPTY, merge } from 'rxjs';
+import {
+  of,
+  from,
+  timer,
+  BehaviorSubject,
+  Subject,
+  Observable,
+  EMPTY,
+  merge,
+  ReplaySubject,
+} from 'rxjs';
 import {
   first,
   takeUntil,
@@ -42,9 +55,7 @@ import { ShutdownReason } from 'raiden-ts/constants';
 import { makeMessageId } from 'raiden-ts/transfers/utils';
 import { encodeJsonMessage } from 'raiden-ts/messages/utils';
 import { messageSend, messageReceived } from 'raiden-ts/messages/actions';
-
-import { epicFixtures } from '../fixtures';
-import { raidenEpicDeps, makeLog, makeSignature } from '../mocks';
+import { pluckDistinct } from 'raiden-ts/utils/rx';
 
 describe('raiden epic', () => {
   let depsMock = raidenEpicDeps(),
@@ -136,9 +147,9 @@ describe('raiden epic', () => {
          * run before the return of the function.
          */
         // See: https://github.com/cartant/rxjs-marbles/issues/11
-        depsMock.provider.getBlockNumber.mockReturnValueOnce((of(633) as unknown) as Promise<
-          number
-        >);
+        depsMock.provider.getBlockNumber.mockReturnValueOnce(
+          (of(633) as unknown) as Promise<number>,
+        );
         const action$ = m.cold('--b-------d|', {
             b: newBlock({ blockNumber: 634 }),
             d: raidenShutdown({ reason: ShutdownReason.STOP }),
@@ -251,8 +262,9 @@ describe('raiden epic', () => {
     });
 
     test('unexpected exception triggers shutdown', async () => {
-      const action$ = of(newBlock({ blockNumber: 122 })),
-        state$ = of(state);
+      const action$ = new ReplaySubject<RaidenAction>(1),
+        state$ = depsMock.latest$.pipe(pluckDistinct('state'));
+      action$.next(newBlock({ blockNumber: 122 }));
 
       const error = new Error('connection lost');
       depsMock.provider.listAccounts.mockRejectedValueOnce(error);
@@ -261,6 +273,8 @@ describe('raiden epic', () => {
       await expect(raidenRootEpic(action$, state$, depsMock).toPromise()).resolves.toEqual(
         raidenShutdown({ reason: error }),
       );
+
+      action$.complete();
     });
   });
 

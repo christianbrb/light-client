@@ -33,7 +33,6 @@ describe('MintDepositDialog.vue', () => {
     return mount(MintDepositDialog, {
       vuetify,
       store,
-      sync: false,
       mocks: {
         $t: (msg: string) => msg,
         $raiden
@@ -49,7 +48,7 @@ describe('MintDepositDialog.vue', () => {
     jest.resetAllMocks();
   });
 
-  test('minting is successful', async () => {
+  test('emit a done event when the mint and deposit is successful', async () => {
     expect.assertions(3);
     $raiden.mint.mockResolvedValueOnce(undefined);
     $raiden.depositToUDC.mockResolvedValueOnce(undefined);
@@ -60,7 +59,7 @@ describe('MintDepositDialog.vue', () => {
     expect(wrapper.emitted()['done']).toHaveLength(1);
   });
 
-  test('minting fails', async () => {
+  test('show an error message when the minting fails', async () => {
     expect.assertions(4);
     $raiden.mint.mockRejectedValueOnce(new Error('error'));
     wrapper.find('.mint-deposit-dialog__action button').trigger('click');
@@ -72,7 +71,7 @@ describe('MintDepositDialog.vue', () => {
     expect(errorText.text()).toMatch('error');
   });
 
-  test('user has already enough tokens', async () => {
+  test('do not mint when the user has already enough tokens', async () => {
     expect.assertions(3);
     store.commit('updateTokens', {
       '0x3a989D97388a39A0B5796306C615d10B7416bE77': {

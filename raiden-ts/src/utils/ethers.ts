@@ -61,7 +61,9 @@ export function getEventsStream<T extends any[]>(
       ...log,
       ...parsed,
       args,
-      removeListener: () => {},
+      removeListener: () => {
+        /* getLogs don't install filter */
+      },
       getBlock: () => provider.getBlock(log.blockHash!),
       getTransaction: () => provider.getTransaction(log.transactionHash!),
       getTransactionReceipt: () => provider.getTransactionReceipt(log.transactionHash!),
@@ -148,4 +150,14 @@ export function patchSignSend(provider: JsonRpcProvider): void {
     }
     return origSend.apply(this, [method, params]);
   };
+}
+
+/**
+ * Return a network name, if known, or stringified chainId otherwise
+ *
+ * @param network - Network to get name from
+ * @returns name or chainId as string
+ */
+export function getNetworkName(network: Network) {
+  return network.name !== 'unknown' ? network.name : network.chainId.toString();
 }

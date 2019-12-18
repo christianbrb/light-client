@@ -81,7 +81,7 @@ describe('Raiden', () => {
       message: 'pfs message',
       network_info: {
         chain_id: network.chainId,
-        registry_address: contractsInfo.TokenNetworkRegistry.address,
+        token_network_registry_address: contractsInfo.TokenNetworkRegistry.address,
       },
       operator: 'pfs operator',
       payment_address: pfsAddress,
@@ -111,7 +111,7 @@ describe('Raiden', () => {
   });
 
   test('create from other params and RaidenState', async () => {
-    expect.assertions(8);
+    expect.assertions(10);
 
     // token address not found as an account in provider
     await expect(Raiden.create(provider, token, storage, contractsInfo, config)).rejects.toThrow(
@@ -124,7 +124,7 @@ describe('Raiden', () => {
     ).rejects.toThrow(/account must be either.*address or private key/i);
 
     // from hex-encoded private key, initial unknown state (decodable) but invalid address inside
-    expect(
+    await expect(
       Raiden.create(
         provider,
         '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -135,7 +135,7 @@ describe('Raiden', () => {
       ),
     ).rejects.toThrow(/Mismatch between provided account and loaded state/i);
 
-    expect(
+    await expect(
       Raiden.create(
         provider,
         1,
@@ -176,6 +176,11 @@ describe('Raiden', () => {
     expect(raiden1.started).toBe(true);
     raiden1.stop();
     expect(raiden1.started).toBe(false);
+
+    // success when creating using subkey
+    const raiden2 = await Raiden.create(provider, 0, storage, contractsInfo, config, true);
+    expect(raiden2).toBeInstanceOf(Raiden);
+    expect(raiden2.mainAddress).toBe(accounts[0]);
   });
 
   test('address', () => {
@@ -566,12 +571,7 @@ describe('Raiden', () => {
       raiden1.start();
 
       // await raiden1 client matrix initialization
-      await raiden1.action$
-        .pipe(
-          filter(isActionOf(matrixSetup)),
-          first(),
-        )
-        .toPromise();
+      await raiden1.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise();
 
       await expect(raiden.getAvailability(accounts[2])).resolves.toMatchObject({
         userId: `@${accounts[2].toLowerCase()}:${matrixServer}`,
@@ -668,12 +668,7 @@ describe('Raiden', () => {
         raiden1.start();
 
         // await raiden1 client matrix initialization
-        await raiden1.action$
-          .pipe(
-            filter(isActionOf(matrixSetup)),
-            first(),
-          )
-          .toPromise();
+        await raiden1.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise();
 
         await expect(raiden.getAvailability(partner)).resolves.toMatchObject({
           userId: `@${partner.toLowerCase()}:${matrixServer}`,
@@ -717,10 +712,7 @@ describe('Raiden', () => {
             contractsInfo,
           ),
           matrix2Promise = raiden2.action$
-            .pipe(
-              filter(isActionOf(matrixSetup)),
-              first(),
-            )
+            .pipe(filter(isActionOf(matrixSetup)), first())
             .toPromise();
 
         raiden2.start();
@@ -747,7 +739,9 @@ describe('Raiden', () => {
         fetch.mockResolvedValueOnce({
           ok: true,
           status: 404,
-          json: jest.fn(async () => {}),
+          json: jest.fn(async () => {
+            /* error */
+          }),
           text: jest.fn(async () => losslessStringify({})),
         });
 
@@ -794,17 +788,37 @@ describe('Raiden', () => {
   });
 
   describe('findPFS', () => {
-    test('fail config.pfs not in auto mode', async () => {
-      expect.assertions(2);
+    test('fail config.pfs disabled', async () => {
+      expect.assertions(1);
 
       raiden.updateConfig({ pfs: null }); // disabled pfs
-      await expect(raiden.findPFS()).rejects.toThrowError("pfs isn't auto");
-
-      raiden.updateConfig({ pfs: pfsUrl }); // pfs set
-      await expect(raiden.findPFS()).rejects.toThrowError("pfs isn't auto");
+      await expect(raiden.findPFS()).rejects.toThrowError('PFS disabled in config');
     });
 
-    test('success', async () => {
+    test('success: config.pfs set', async () => {
+      expect.assertions(1);
+
+      // pfsInfo
+      fetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: jest.fn(async () => pfsInfoResponse),
+        text: jest.fn(async () => losslessStringify(pfsInfoResponse)),
+      });
+
+      raiden.updateConfig({ pfs: pfsUrl }); // pfs set
+      await expect(raiden.findPFS()).resolves.toEqual([
+        {
+          address: pfsAddress,
+          url: pfsUrl,
+          rtt: expect.any(Number),
+          price: expect.any(BigNumber),
+          token: expect.any(String),
+        },
+      ]);
+    });
+
+    test('success: auto', async () => {
       expect.assertions(1);
 
       // pfsInfo
@@ -831,7 +845,7 @@ describe('Raiden', () => {
   describe('findRoutes', () => {
     let raiden1: Raiden, raiden2: Raiden, target: string;
 
-    beforeAll(() => jest.setTimeout(90e3));
+    beforeAll(() => jest.setTimeout(50e3));
 
     beforeEach(async () => {
       target = accounts[2];
@@ -856,18 +870,8 @@ describe('Raiden', () => {
 
       // await client's matrix initialization
       await Promise.all([
-        raiden1.action$
-          .pipe(
-            filter(isActionOf(matrixSetup)),
-            first(),
-          )
-          .toPromise(),
-        raiden2.action$
-          .pipe(
-            filter(isActionOf(matrixSetup)),
-            first(),
-          )
-          .toPromise(),
+        raiden1.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise(),
+        raiden2.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise(),
       ]);
 
       await expect(raiden.getAvailability(partner)).resolves.toMatchObject({
@@ -883,13 +887,6 @@ describe('Raiden', () => {
       await new Promise(resolve => setTimeout(resolve, 100));
 
       raiden.updateConfig({ pfs: pfsUrl });
-
-      fetch.mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: jest.fn(async () => pfsInfoResponse),
-        text: jest.fn(async () => losslessStringify(pfsInfoResponse)),
-      });
     });
 
     afterEach(() => {
@@ -902,8 +899,17 @@ describe('Raiden', () => {
 
       fetch.mockResolvedValueOnce({
         ok: true,
+        status: 200,
+        json: jest.fn(async () => pfsInfoResponse),
+        text: jest.fn(async () => losslessStringify(pfsInfoResponse)),
+      });
+
+      fetch.mockResolvedValueOnce({
+        ok: true,
         status: 404,
-        json: jest.fn(async () => {}),
+        json: jest.fn(async () => {
+          /* error */
+        }),
         text: jest.fn(async () => losslessStringify({})),
       });
 
@@ -938,6 +944,13 @@ describe('Raiden', () => {
     test('success with findPFS', async () => {
       expect.assertions(7);
 
+      fetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: jest.fn(async () => pfsInfoResponse),
+        text: jest.fn(async () => losslessStringify(pfsInfoResponse)),
+      });
+
       // config.pfs in auto mode
       raiden.updateConfig({ pfs: undefined });
 
@@ -955,7 +968,9 @@ describe('Raiden', () => {
       fetch.mockResolvedValueOnce({
         ok: true,
         status: 404,
-        json: jest.fn(async () => {}),
+        json: jest.fn(async () => {
+          /* error */
+        }),
         text: jest.fn(async () => losslessStringify({})),
       });
 
@@ -1002,8 +1017,17 @@ describe('Raiden', () => {
 
       fetch.mockResolvedValueOnce({
         ok: true,
+        status: 200,
+        json: jest.fn(async () => pfsInfoResponse),
+        text: jest.fn(async () => losslessStringify(pfsInfoResponse)),
+      });
+
+      fetch.mockResolvedValueOnce({
+        ok: true,
         status: 404,
-        json: jest.fn(async () => {}),
+        json: jest.fn(async () => {
+          /* error */
+        }),
         text: jest.fn(async () => losslessStringify({})),
       });
 
@@ -1028,6 +1052,18 @@ describe('Raiden', () => {
       await expect(raiden.findRoutes(token, target, 201)).rejects.toThrowError(
         /no valid routes found/,
       );
+    });
+
+    test('directRoute', async () => {
+      expect.assertions(5);
+
+      await expect(raiden.directRoute(token, target, 23)).resolves.toBeUndefined();
+
+      await expect(raiden.directRoute(token, partner, 201)).resolves.toBeUndefined();
+
+      await expect(raiden.directRoute(token, partner, 23)).resolves.toEqual([
+        { path: [partner], fee: bigNumberify(0) },
+      ]);
     });
   });
 
@@ -1075,5 +1111,92 @@ describe('Raiden', () => {
       await raiden.mint(await raiden.userDepositTokenAddress(), 10);
       await expect(raiden.depositToUDC(10)).resolves.toMatch(/^0x[0-9a-fA-F]{64}$/);
     });
+  });
+
+  test('subkey', async () => {
+    expect.assertions(28);
+    const sub = await Raiden.create(provider, 0, storage, contractsInfo, config, true);
+
+    const subStarted = sub.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise();
+    sub.start();
+    await subStarted;
+
+    expect(sub.mainAddress).toBe(raiden.address);
+    expect(sub.address).toMatch(/^0x/);
+
+    const mainBalance = await sub.getBalance(sub.mainAddress);
+    const subBalance = await sub.getBalance(sub.address);
+
+    expect(mainBalance.gt(Zero)).toBe(true);
+    expect(subBalance.isZero()).toBe(true);
+
+    // no parameters get main balance instead of sub balance
+    await expect(sub.getBalance()).resolves.toEqual(mainBalance);
+
+    const mainTokenBalance = await sub.getTokenBalance(token, sub.mainAddress);
+
+    // no gas to pay for tx with subkey
+    await expect(sub.openChannel(token, partner, { subkey: true })).rejects.toThrowError(
+      /doesn't have enough funds.*\bonly has: 0\b/,
+    );
+
+    await expect(sub.openChannel(token, partner)).resolves.toMatch(/^0x/);
+    await expect(sub.depositChannel(token, partner, 200)).resolves.toMatch(/^0x/);
+
+    // txs above should spend gas from main account
+    const newMainBalance = await sub.getBalance(sub.mainAddress);
+    expect(newMainBalance.gt(Zero)).toBe(true);
+    expect(newMainBalance.lt(mainBalance)).toBe(true);
+
+    // as well as tokens
+    const newMainTokenBalance = await sub.getTokenBalance(token, sub.mainAddress);
+    expect(newMainTokenBalance).toEqual(mainTokenBalance.sub(200));
+
+    await expect(sub.closeChannel(token, partner)).resolves.toMatch(/^0x/);
+    await provider.mine(config.settleTimeout! + 1);
+    await expect(sub.settleChannel(token, partner)).resolves.toMatch(/^0x/);
+
+    // settled tokens go to subkey
+    expect((await sub.getTokenBalance(token, sub.address)).eq(200)).toBe(true);
+
+    const bal = parseEther('0.1');
+    await expect(sub.transferOnchainBalance(sub.address, bal)).resolves.toMatch(/^0x/);
+
+    // sent ETH from main account to subkey, gas paid from main account
+    expect((await sub.getBalance()).lt(newMainTokenBalance.sub(bal))).toBe(true);
+    expect((await sub.getBalance(sub.address)).eq(bal)).toBe(true);
+
+    // now with subkey, as it has ETH, through on-chain method param
+    await expect(sub.openChannel(token, partner, { subkey: true })).resolves.toMatch(/^0x/);
+    // first deposit fails, as subkey has only 200 tokens settled from previous channel
+    await expect(sub.depositChannel(token, partner, 300, { subkey: true })).rejects.toThrow(
+      'revert',
+    );
+    await expect(sub.depositChannel(token, partner, 80, { subkey: true })).resolves.toMatch(/^0x/);
+
+    await provider.mine();
+
+    // test changing through config.subkey
+    sub.updateConfig({ subkey: true });
+
+    const closeTxHash = await sub.closeChannel(token, partner);
+    expect(closeTxHash).toMatch(/^0x/);
+    const closeTx = await provider.getTransaction(closeTxHash);
+    expect(closeTx.from).toBe(sub.address);
+
+    await provider.mine(config.settleTimeout! + 1);
+    await expect(sub.settleChannel(token, partner)).resolves.toMatch(/^0x/);
+
+    // gas for close+settle paid from subkey
+    expect((await sub.getBalance(sub.address)).lt(bal)).toBe(true);
+    // settled tokens go to subkey
+    expect((await sub.getTokenBalance(token, sub.address)).eq(200)).toBe(true);
+
+    // transfer on chain from subkey to main account
+    await expect(sub.transferOnchainTokens(token, sub.mainAddress!, 200)).resolves.toMatch(/^0x/);
+    expect((await sub.getTokenBalance(token)).isZero()).toBe(true);
+    expect((await sub.getTokenBalance(token, sub.mainAddress)).eq(mainTokenBalance)).toBe(true);
+
+    sub.stop();
   });
 });

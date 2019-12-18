@@ -36,7 +36,7 @@
           single-select
           show-select
           sort-by="price"
-          item-key="service"
+          item-key="address"
           class="pathfinding-services__table"
           @item-selected="select($event)"
         >
@@ -131,10 +131,10 @@ export default class PathfindingServices extends Vue {
   }: {
     item: RaidenPFS;
     value: boolean;
-  }): RaidenPFS | null {
+  }): [RaidenPFS, boolean] | null {
     // A PFS service got selected
     if (value) {
-      return item;
+      return [item, this.services.length === 1];
     }
 
     // A PFS service was unselected
@@ -172,9 +172,11 @@ export default class PathfindingServices extends Vue {
 @import '../scss/colors';
 
 .pathfinding-services {
-  &__wrapper > * {
-    width: 250px;
-    text-align: center;
+  &__wrapper {
+    > * {
+      width: 250px;
+      text-align: center;
+    }
   }
 
   &__error {
@@ -190,17 +192,33 @@ export default class PathfindingServices extends Vue {
       background-color: transparent !important;
     }
 
-    ::v-deep tr:hover {
-      background: $primary-disabled-color !important;
-    }
+    ::v-deep {
+      tr {
+        &:hover {
+          background: $primary-disabled-color !important;
+        }
+      }
 
-    ::v-deep .v-icon {
-      color: $primary-color;
-    }
+      .v-icon {
+        color: $primary-color;
+      }
 
-    ::v-deep th {
-      color: #646464 !important;
-      font-size: 16px;
+      th {
+        font-size: 16px;
+        border: none !important;
+      }
+
+      td {
+        border: none !important;
+        padding-top: 5px;
+        padding-bottom: 5px;
+      }
+
+      .v-data-table {
+        &__selected {
+          background: rgba($disabled-text-color, 0.1) !important;
+        }
+      }
     }
   }
 }

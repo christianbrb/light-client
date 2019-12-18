@@ -89,10 +89,7 @@ describe('getEventsStream', () => {
     provider.getLogs.mockResolvedValueOnce([pastLog]);
 
     const promise = getEventsStream<TokenNetworkCreatedEvent>(registryContract, [filter], of(1))
-      .pipe(
-        take(2),
-        toArray(),
-      )
+      .pipe(take(2), toArray())
       .toPromise();
 
     provider.emit('block', 1336);
@@ -213,7 +210,7 @@ describe('types', () => {
   test('BigNumberC', () => {
     const b = bigNumberify(16);
     expect(BigNumberC.is(b)).toBe(true);
-    expect(BigNumberC.encode(b)).toEqual(new LosslessNumber('16'));
+    expect(BigNumberC.encode(b)).toEqual('16');
     pipe(
       BigNumberC.decode(b),
       fold(fail, result => expect(result).toBeInstanceOf(BigNumber)),
@@ -298,8 +295,7 @@ describe('data', () => {
 
   test('losslessParse', () => {
     const parsed = losslessParse('{"big":18446744073709551616,"small":65535 }');
-    expect(parsed.big).toBeInstanceOf(LosslessNumber);
-    expect(parsed.big.value).toBe('18446744073709551616');
+    expect(parsed.big).toEqual(bigNumberify('18446744073709551616'));
     expect(parsed.small).toBe(65535);
   });
 

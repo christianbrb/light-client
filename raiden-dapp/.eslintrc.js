@@ -26,7 +26,7 @@ module.exports = {
     }],
     'vue/v-bind-style': ['error', 'shorthand'],
     'vue/v-on-style': ['error', 'shorthand'],
-    'vue-i18n/no-raw-text': ['error', {
+    'vue-i18n/no-raw-text': [process.env.NODE_ENV === 'production' ? 'error' : 'warn', {
       'ignoreNodes': ['v-icon'],
     }],
     '@typescript-eslint/no-unused-vars': ['error', {
@@ -46,6 +46,10 @@ module.exports = {
     'vue-i18n/no-unused-keys': ['error', {
       'src': ['./src'],
       'extensions': ['.ts', '.vue']
+    }],
+    "vue/component-name-in-template-casing": ["error", "kebab-case", {
+      "registeredComponentsOnly": false,
+      "ignores": []
     }]
   },
   parserOptions: {

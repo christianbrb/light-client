@@ -36,7 +36,6 @@ describe('FindRoutes.vue', () => {
     vuetify = new Vuetify();
     return mount(FindRoutes, {
       vuetify,
-      sync: false,
       mocks: {
         $t: (msg: string) => msg,
         $raiden
@@ -49,7 +48,7 @@ describe('FindRoutes.vue', () => {
     });
   }
 
-  test('user selects a route', async () => {
+  test('emit a select event when the user selects a route', async () => {
     const wrapper = createWrapper();
     await wrapper.vm.$nextTick();
     expect(wrapper.find('.find-routes__table').isVisible()).toBe(true);

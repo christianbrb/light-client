@@ -1,7 +1,8 @@
 import * as t from 'io-ts';
 import { Network } from 'ethers/utils';
-import { DeepPartial } from 'redux';
+
 import { Address } from './utils/types';
+import { getNetworkName } from './utils/ethers';
 
 /**
  * A Raiden configuration object with required parameters and
@@ -22,6 +23,8 @@ import { Address } from './utils/types';
  *             Defaults to 'debug' if undefined and process.env.NODE_ENV === 'development'
  * - pfs - Path Finding Service URL or Address. Set to null to disable, or leave undefined to
  *             enable automatic fetching from ServiceRegistry.
+ * - subkey - When using subkey, this sets the behavior when { subkey } option isn't explicitly set
+ *            in on-chain method calls. false (default) = use main key; true = use subkey
  */
 export const RaidenConfig = t.readonly(
   t.intersection([
@@ -37,8 +40,16 @@ export const RaidenConfig = t.readonly(
     }),
     t.partial({
       matrixServer: t.string,
-      logger: t.keyof({ ['']: null, debug: null, log: null, info: null, warn: null, error: null }),
+      logger: t.keyof({
+        ['']: null,
+        trace: null,
+        debug: null,
+        info: null,
+        warn: null,
+        error: null,
+      }),
       pfs: t.union([Address, t.string, t.null]),
+      subkey: t.boolean,
     }),
   ]),
 );
@@ -54,7 +65,7 @@ export interface RaidenConfig extends t.TypeOf<typeof RaidenConfig> {}
  */
 export function makeDefaultConfig(
   { network }: { network: Network },
-  overwrites: DeepPartial<RaidenConfig> = {},
+  overwrites: Partial<RaidenConfig> = {},
 ): RaidenConfig {
   return {
     matrixServerLookup:
@@ -62,10 +73,8 @@ export function makeDefaultConfig(
     settleTimeout: 500,
     revealTimeout: 50,
     httpTimeout: 30e3,
-    discoveryRoom: `raiden_${
-      network.name !== 'unknown' ? network.name : network.chainId
-    }_discovery`,
-    pfsRoom: `raiden_${network.name !== 'unknown' ? network.name : network.chainId}_path_finding`,
+    discoveryRoom: `raiden_${getNetworkName(network)}_discovery`,
+    pfsRoom: `raiden_${getNetworkName(network)}_path_finding`,
     matrixExcessRooms: 3,
     pfsSafetyMargin: 1.0,
     ...overwrites,

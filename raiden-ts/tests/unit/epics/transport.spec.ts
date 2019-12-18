@@ -128,9 +128,12 @@ describe('transport epic', () => {
           ),
         );
 
-      await expect(initMatrixEpic(action$, state$, depsMock).toPromise()).resolves.toEqual({
-        type: getType(matrixSetup),
-        payload: {
+      await expect(
+        initMatrixEpic(action$, state$, depsMock)
+          .pipe(first())
+          .toPromise(),
+      ).resolves.toEqual(
+        matrixSetup({
           server: matrixServer,
           setup: {
             userId,
@@ -138,8 +141,8 @@ describe('transport epic', () => {
             deviceId: expect.any(String),
             displayName: expect.any(String),
           },
-        },
-      });
+        }),
+      );
       // ensure if stored setup works, servers list don't need to be fetched
       expect(fetch).not.toHaveBeenCalled();
     });
@@ -148,12 +151,17 @@ describe('transport epic', () => {
       const action$ = EMPTY as Observable<RaidenAction>,
         state$ = of(state);
 
-      // set config
-      depsMock.config$.next({ ...state.config, matrixServer });
+      depsMock.latest$.pipe(first()).subscribe(l => {
+        const state = { ...l.state, config: { ...l.state.config, matrixServer } };
+        depsMock.latest$.next({ ...l, state, config: state.config });
+      });
 
-      await expect(initMatrixEpic(action$, state$, depsMock).toPromise()).resolves.toEqual({
-        type: getType(matrixSetup),
-        payload: {
+      await expect(
+        initMatrixEpic(action$, state$, depsMock)
+          .pipe(first())
+          .toPromise(),
+      ).resolves.toEqual(
+        matrixSetup({
           server: matrixServer,
           setup: {
             userId,
@@ -161,8 +169,8 @@ describe('transport epic', () => {
             deviceId: expect.any(String),
             displayName: expect.any(String),
           },
-        },
-      });
+        }),
+      );
       expect(fetch).not.toHaveBeenCalled();
     });
 
@@ -184,11 +192,17 @@ describe('transport epic', () => {
         );
 
       // set config
-      depsMock.config$.next({ ...state.config, matrixServer });
+      depsMock.latest$.pipe(first()).subscribe(l => {
+        const state = { ...l.state, config: { ...l.state.config, matrixServer } };
+        depsMock.latest$.next({ ...l, state, config: state.config });
+      });
 
-      await expect(initMatrixEpic(action$, state$, depsMock).toPromise()).resolves.toEqual({
-        type: getType(matrixSetup),
-        payload: {
+      await expect(
+        initMatrixEpic(action$, state$, depsMock)
+          .pipe(first())
+          .toPromise(),
+      ).resolves.toEqual(
+        matrixSetup({
           server: matrixServer,
           setup: {
             userId,
@@ -196,17 +210,20 @@ describe('transport epic', () => {
             deviceId: expect.any(String),
             displayName: expect.any(String),
           },
-        },
-      });
+        }),
+      );
       expect(fetch).not.toHaveBeenCalled();
     });
 
     test('matrix fetch servers list', async () => {
       const action$ = EMPTY as Observable<RaidenAction>,
         state$ = of(state);
-      await expect(initMatrixEpic(action$, state$, depsMock).toPromise()).resolves.toEqual({
-        type: getType(matrixSetup),
-        payload: {
+      await expect(
+        initMatrixEpic(action$, state$, depsMock)
+          .pipe(first())
+          .toPromise(),
+      ).resolves.toEqual(
+        matrixSetup({
           server: `https://${matrixServer}`,
           setup: {
             userId,
@@ -214,8 +231,8 @@ describe('transport epic', () => {
             deviceId: expect.any(String),
             displayName: expect.any(String),
           },
-        },
-      });
+        }),
+      );
       expect(fetch).toHaveBeenCalledTimes(2); // list + rtt
     });
 
@@ -720,10 +737,7 @@ describe('transport epic', () => {
         roomId = partnerRoomId;
 
       const promise = matrixHandleInvitesEpic(action$, state$, depsMock)
-        .pipe(
-          first(),
-          takeUntil(timer(100)),
-        )
+        .pipe(first(), takeUntil(timer(100)))
         .toPromise();
 
       matrix.emit(
@@ -1224,7 +1238,7 @@ describe('transport epic', () => {
 
     await expect(
       matrixMessageGlobalSendEpic(
-        of(messageGlobalSend({ message }, { roomName: depsMock.config$.value.discoveryRoom! })),
+        of(messageGlobalSend({ message }, { roomName: state.config.discoveryRoom! })),
         state$,
         depsMock,
       ).toPromise(),

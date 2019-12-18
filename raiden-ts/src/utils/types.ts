@@ -2,9 +2,8 @@
 import * as t from 'io-ts';
 import { BigNumber, bigNumberify, getAddress, isHexString, hexDataLength } from 'ethers/utils';
 import { Two, Zero } from 'ethers/constants';
-import { LosslessNumber } from 'lossless-json';
 import { memoize } from 'lodash';
-import { isLeft } from 'fp-ts/lib/Either';
+import { Either, Right } from 'fp-ts/lib/Either';
 import { ThrowReporter } from 'io-ts/lib/ThrowReporter';
 
 /* A Subset of DOM's Storage/localStorage interface which supports async/await */
@@ -15,8 +14,28 @@ export interface Storage {
 }
 
 /**
+ * Error for assertion functions/type guards
+ */
+export class AssertionError extends Error {}
+
+/**
+ * Type-safe assertion function (TS3.7)
+ *
+ * @param condition - Condition to validate as truthy
+ * @param msg - Message to throw if condition is falsy
+ */
+export function assert(condition: any, msg?: string): asserts condition {
+  if (!condition) {
+    throw new AssertionError(msg ?? 'AssertionError');
+  }
+}
+
+function reporterAssert<T>(value: Either<t.Errors, T>): asserts value is Right<T> {
+  ThrowReporter.report(value);
+}
+
+/**
  * Decode/validate like codec.decode, but throw or return right instead of Either
- * TODO: add assert signature after TS 3.7
  *
  * @param codec - io-ts codec to be used for decoding/validation
  * @param data - data to decode/validate
@@ -24,8 +43,7 @@ export interface Storage {
  */
 export function decode<C extends t.Mixed>(codec: C, data: C['_I']): C['_A'] {
   const decoded = codec.decode(data);
-  // report already throw, so the throw here is just for type narrowing in context
-  if (isLeft(decoded)) throw ThrowReporter.report(decoded);
+  reporterAssert(decoded);
   return decoded.right;
 }
 
@@ -40,28 +58,26 @@ export function isntNil<T>(value: T): value is NonNullable<T> {
   return value != null;
 }
 
-const isStringifiable = (u: unknown): u is { toString: () => string } =>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  u !== null && u !== undefined && typeof (u as any)['toString'] === 'function';
 /**
  * Codec of ethers.utils.BigNumber objects
+ *
  * Input can be anything bigNumberify-able: number, string, LosslessNumber or BigNumber
- * Output is LosslessNumber, so we can JSON-serialize with 'number' types bigger than JS VM limits
- * of ±2^53, as Raiden full-client/python stdlib json encode/decode longs as json number.
+ * Output is string, so we can JSON-serialize with 'number's types bigger than JS VM limits
+ * of ±2^53, as Raiden python client stdlib json encode longs as string.
  */
-export const BigNumberC = new t.Type<BigNumber, LosslessNumber>(
+export const BigNumberC = new t.Type<BigNumber, string>(
   'BigNumber',
   BigNumber.isBigNumber,
   (u, c) => {
     if (BigNumber.isBigNumber(u)) return t.success(u);
     try {
-      if (isStringifiable(u)) return t.success(bigNumberify(u.toString()));
+      // decode by trying to bigNumberify string representation of anything
+      return t.success(bigNumberify((u as any).toString()));
     } catch (err) {
       return t.failure(u, c, err.message);
     }
-    return t.failure(u, c);
   },
-  a => new LosslessNumber(a.toString()),
+  a => a.toString(),
 );
 
 // sized brands interfaces must derive from this interface

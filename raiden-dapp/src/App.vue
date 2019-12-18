@@ -20,6 +20,8 @@
         {{ $t('application.privacy-policy') }}
       </a>
     </div>
+    <offline-snackbar />
+    <update-snackbar />
   </v-app>
 </template>
 
@@ -27,12 +29,14 @@
 import { Component, Vue } from 'vue-property-decorator';
 import SplashScreen from '@/components/SplashScreen.vue';
 import AppHeader from '@/components/AppHeader.vue';
+import OfflineSnackbar from '@/components/OfflineSnackbar.vue';
+import UpdateSnackbar from '@/components/UpdateSnackbar.vue';
 import { mapState } from 'vuex';
 import { DeniedReason } from '@/model/types';
 
 @Component({
   computed: mapState(['loading', 'accessDenied']),
-  components: { AppHeader, SplashScreen }
+  components: { AppHeader, SplashScreen, OfflineSnackbar, UpdateSnackbar }
 })
 export default class App extends Vue {
   name: string;
@@ -101,8 +105,10 @@ export default class App extends Vue {
   padding: 0 !important;
 }
 
-.application__container {
-  height: calc(100% - 8px);
+.application {
+  &__container {
+    height: calc(100% - 8px);
+  }
 }
 
 .v-application {

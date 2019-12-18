@@ -5,7 +5,12 @@
       "transfer": "Transfer",
       "continue": "Continue",
       "confirm": "Confirm"
-    }
+    },
+    "offline": "Please connect to the internet."
+  },
+  "update": {
+    "available": "A new version is available.",
+    "update": "Refresh"
   },
   "address-input": {
     "paste-button": "Paste",
@@ -19,7 +24,8 @@
       "empty": "Please enter an address or ENS name",
       "ens-resolve-failed": "Please enter a resolvable ENS name",
       "invalid-excluded-address": "Please enter a different address or ENS name. You can't use your own address or the address of the token network.",
-      "channel-not-open": "Please enter a hub address you have an open channel with."
+      "channel-not-open": "Please enter a hub address you have an open channel with.",
+      "target-offline": "Target is offline."
     }
   },
   "amount-input": {
@@ -29,7 +35,8 @@
     "error": {
       "empty": "Please enter an amount",
       "too-many-decimals": "Please use only up to {decimals} decimals for this token",
-      "not-enough-funds": "Your maximum usable amount is {funds} {symbol}"
+      "not-enough-funds": "Your maximum usable amount is {funds} {symbol}",
+      "zero": "Please enter an amount larger than zero"
     }
   },
   "app-header": {
@@ -137,6 +144,10 @@
   "splash-screen": {
     "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can just be used on the Ethereum Testnets.",
     "matrix-sign": "On the first launch you get asked to sign two messages to connect to the Raiden transport layer. You sign the matrix server name and the public user name.",
+    "getting-started": {
+      "description": "Read the {0} for detailed information on how to use the Raiden dApp.",
+      "link-name": "getting started guide"
+    },
     "connect-button": "Connect",
     "no-provider": "No web3 provider was detected. Please install e.g. MetaMask"
   },
@@ -185,7 +196,7 @@
     "amount-placeholder": "Specify amount...",
     "error": {
       "button": "Dismiss",
-      "title": "Token transfer unsuccessful. Please retry.",
+      "title": "Token transfer unsuccessful.",
       "deposit-title": "Deposit was unsuccessful. Please retry."
     },
     "steps": {
@@ -193,6 +204,7 @@
         "title": "Request Route",
         "udc-description": "{token} Balance",
         "in-progress": "Sign the message to pay for the route request",
+        "searching-for-route": "Searching for route...",
         "done": "Route request payment complete"
       },
       "select-route": {
@@ -203,17 +215,23 @@
         "total-amount": "Total Amount"
       },
       "call-to-action": {
-        "1": "Pay Route Request",
-        "2": "Confirm Mediation Fees",
-        "3": "Confirm"
+        "1": {
+          "default": "Transfer Route Request",
+          "amount": "Transfer {amount} {symbol}"
+        },
+        "2": {
+          "default": "Confirm Mediation Fees",
+          "amount": "Confirm {amount} {symbol}"
+        },
+        "3": {
+          "amount": "Transfer {amount} {symbol}"
+        }
       },
       "transfer": {
-        "label": "Transfer",
-        "title": "Sending Tokens",
-        "description": "Please do not close the browser and confirm the transactions with MetaMask."
+        "title": "Transfering Tokens",
+        "description": "Sign the transaction in MetaMask and close this dialogue to continue using the dApp. Your transfer will finish in the background."
       },
       "done": {
-        "label": "Done",
         "title": "Send Successful",
         "description": "Your transfer was successful. You may get prompted to sign additional messages in order to acknowledge delivered messages from the target."
       },

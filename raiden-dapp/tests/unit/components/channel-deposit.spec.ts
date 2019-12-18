@@ -6,10 +6,11 @@ import { TestData } from '../data/mock-data';
 import { mockInput } from '../utils/interaction-utils';
 import ChannelDeposit from '@/components/ChannelDeposit.vue';
 import { BigNumber } from 'ethers/utils';
+import flushPromises from 'flush-promises';
 
 Vue.use(Vuetify);
 
-describe('ChannelDeposit.vue', function() {
+describe('ChannelDeposit.vue', () => {
   addElemWithDataAppToBody();
 
   let wrapper: Wrapper<ChannelDeposit>;
@@ -26,7 +27,7 @@ describe('ChannelDeposit.vue', function() {
     });
   });
 
-  it('should emit a cancel event when cancel pressed', function() {
+  test('emit a cancel event when the user presses cancel', () => {
     wrapper
       .findAll('button')
       .at(0)
@@ -34,13 +35,17 @@ describe('ChannelDeposit.vue', function() {
     expect(wrapper.emitted().cancel).toBeTruthy();
   });
 
-  it('should emit a confirm event when confirm pressed', function() {
+  test('emit a "confirm" event when the user presses confirm', async () => {
     mockInput(wrapper, '0.5');
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
     wrapper
       .findAll('button')
       .at(1)
       .trigger('click');
     expect(wrapper.emitted().confirm).toBeTruthy();
+
     const [events] = wrapper.emitted().confirm;
     const deposit: BigNumber = (events[0] as any) as BigNumber;
     expect(new BigNumber(0.5 * 10 ** 5).eq(deposit)).toBeTruthy();

@@ -1,5 +1,4 @@
-/// <reference path="../typings/matrix-js-sdk/index.d.ts" />
-import { Subject, BehaviorSubject, AsyncSubject } from 'rxjs';
+import { AsyncSubject, Subject, Observable } from 'rxjs';
 import { Signer } from 'ethers';
 import { JsonRpcProvider } from 'ethers/providers';
 import { Network } from 'ethers/utils';
@@ -15,6 +14,7 @@ import { RaidenAction } from './actions';
 import { RaidenState } from './state';
 import { Address } from './utils/types';
 import { RaidenConfig } from './config';
+import { Presences } from './transport/types';
 
 interface Info {
   address: Address;
@@ -28,9 +28,14 @@ export interface ContractsInfo {
 }
 
 export interface RaidenEpicDeps {
-  stateOutput$: BehaviorSubject<RaidenState>;
-  actionOutput$: Subject<RaidenAction>;
-  config$: BehaviorSubject<RaidenConfig>;
+  latest$: Subject<{
+    action: RaidenAction;
+    state: RaidenState;
+    config: RaidenConfig;
+    presences: Presences;
+    pfsList: readonly Address[];
+  }>;
+  config$: Observable<RaidenConfig>;
   matrix$: AsyncSubject<MatrixClient>;
   provider: JsonRpcProvider;
   network: Network;
@@ -42,4 +47,5 @@ export interface RaidenEpicDeps {
   getTokenContract: (address: Address) => HumanStandardToken;
   serviceRegistryContract: ServiceRegistry;
   userDepositContract: UserDeposit;
+  main?: { signer: Signer; address: Address };
 }

@@ -188,9 +188,9 @@ export const pathFindServiceEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   deps: RaidenEpicDeps,
-): Observable<
-  ActionType<typeof pathFound | typeof pathFindFailed | typeof iouPersist | typeof iouClear>
-> =>
+): Observable<ActionType<
+  typeof pathFound | typeof pathFindFailed | typeof iouPersist | typeof iouClear
+>> =>
   combineLatest(
     state$,
     getPresences$(action$),
@@ -213,6 +213,7 @@ export const pathFindServiceEpic = (
                 throw new Error(`PFS: unknown tokenNetwork ${tokenNetwork}`);
               if (!(target in presences) || !presences[target].payload.available)
                 throw new Error(`PFS: target ${target} not online`);
+
               // if pathFind received a set of paths, pass it through to validation/cleanup
               if (action.payload.paths) return of({ paths: action.payload.paths, iou: undefined });
               // else, if possible, use a direct transfer
@@ -220,10 +221,13 @@ export const pathFindServiceEpic = (
                 channelCanRoute(state, presences, tokenNetwork, target, action.meta.value) === true
               ) {
                 return of({
-                  paths: [{ path: [state.address, target], fee: Zero as Int<32> }],
+                  paths: [{ path: [deps.address, target], fee: Zero as Int<32> }],
                   iou: undefined,
                 });
-              } else if (!action.payload.pfs && configPfs === null) {
+              } else if (
+                action.payload.pfs === null || // explicitly disabled in action
+                (!action.payload.pfs && configPfs === null) // disabled in config and not provided
+              ) {
                 // pfs not specified in action and disabled (null) in config
                 throw new Error(`PFS disabled and no direct route available`);
               } else {
@@ -342,7 +346,7 @@ export const pathFindServiceEpic = (
                   // eslint-disable-next-line prefer-const
                   for (let { path, fee } of data.paths) {
                     // if route has us as first hop, cleanup/shift
-                    if (path[0] === state.address) path = path.slice(1);
+                    if (path[0] === deps.address) path = path.slice(1);
                     const recipient = path[0];
                     // if this recipient was already invalidated in a previous iteration, skip
                     if (invalidatedRecipients.has(recipient)) continue;
@@ -425,7 +429,7 @@ export const pfsCapacityUpdateEpic = (
           : (Zero as UInt<8>),
         updating_capacity: ownCapacity,
         other_capacity: partnerCapacity,
-        reveal_timeout: revealTimeout,
+        reveal_timeout: bigNumberify(revealTimeout) as UInt<32>,
       };
 
       return from(signMessage(signer, message)).pipe(
@@ -451,8 +455,8 @@ export const pfsCapacityUpdateEpic = (
  * @returns Observable of pfsListUpdated actions
  */
 export const pfsServiceRegistryMonitorEpic = (
-  {  }: Observable<RaidenAction>,
-  {  }: Observable<RaidenState>,
+  {}: Observable<RaidenAction>,
+  {}: Observable<RaidenState>,
   { serviceRegistryContract, contractsInfo, config$ }: RaidenEpicDeps,
 ): Observable<ActionType<typeof pfsListUpdated>> =>
   config$.pipe(

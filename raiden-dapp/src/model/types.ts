@@ -8,6 +8,10 @@ export interface Token {
   readonly name?: string;
 }
 
+export interface Presences {
+  [address: string]: boolean;
+}
+
 export interface AccTokenModel {
   name: string;
   symbol: string;
@@ -33,12 +37,6 @@ export interface TokenModel extends AccTokenModel {
   readonly settling: number;
   readonly settled: number;
 }
-
-export interface LeaveNetworkResult {
-  readonly closed: number;
-  readonly failed: number;
-}
-
 export interface Progress {
   readonly current: number;
   readonly total: number;

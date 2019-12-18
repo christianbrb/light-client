@@ -29,7 +29,7 @@ Vue.filter('displayFormat', Filters.displayFormat);
 
 const localVue = createLocalVue();
 
-describe('ChannelList.vue', function() {
+describe('ChannelList.vue', () => {
   let wrapper: Wrapper<ChannelList>;
   let raiden: Mocked<RaidenService>;
   let vuetify: typeof Vuetify;
@@ -75,42 +75,50 @@ describe('ChannelList.vue', function() {
     jest.clearAllMocks();
   });
 
-  it('should display two channels entries', function() {
+  test('show four channels entries', () => {
     const connections = wrapper.findAll('.channel-list__channels__channel');
     expect(connections.exists()).toBeTruthy();
     expect(connections.length).toBe(4);
   });
 
-  it('should display a close and deposit action for an open channel', function() {
+  test('disable the settle button when a channel is "open"', async () => {
     wrapper.find('#channel-278').trigger('click');
+
+    await wrapper.vm.$nextTick();
 
     expect(wrapper.find('#close-0').attributes('disabled')).toBeFalsy();
     expect(wrapper.find('#deposit-0').attributes('disabled')).toBeFalsy();
     expect(wrapper.find('#settle-0').attributes('disabled')).toBeTruthy();
   });
 
-  it('should display an no action entry when the channel is not open or settleable', function() {
+  test('disable all buttons when a channel is "closed"', async () => {
     wrapper.find('#channel-281').trigger('click');
+
+    await wrapper.vm.$nextTick();
 
     expect(wrapper.find('#close-3').attributes('disabled')).toBeTruthy();
     expect(wrapper.find('#deposit-3').attributes('disabled')).toBeTruthy();
     expect(wrapper.find('#settle-3').attributes('disabled')).toBeTruthy();
   });
 
-  it('should display only settle in a settleable channel', function() {
+  test('enable settle button when a channel is "settlable"', async () => {
     wrapper.find('#channel-280').trigger('click');
+
+    await wrapper.vm.$nextTick();
 
     expect(wrapper.find('#close-2').attributes('disabled')).toBeTruthy();
     expect(wrapper.find('#deposit-2').attributes('disabled')).toBeTruthy();
     expect(wrapper.find('#settle-2').attributes('disabled')).toBeFalsy();
   });
 
-  describe('closing a channel', function() {
-    it('should close the channel when confirmed', async function() {
+  describe('close a channel', () => {
+    test('close the channel when the user confirms', async () => {
       raiden.closeChannel = jest.fn().mockReturnValue(null);
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#close-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-close');
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
       elementVisibilityChanged(1);
 
@@ -123,11 +131,13 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show a success message on close success', async function() {
+    test('show a success message when the channel closes successfully', async () => {
       raiden.closeChannel = jest.fn().mockReturnValue(null);
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#close-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-close');
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
       elementVisibilityChanged(1);
       await flushPromises();
@@ -137,13 +147,15 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show an error message on close failure', async function() {
+    test('show an error message when close fails', async () => {
       raiden.closeChannel = jest
         .fn()
         .mockRejectedValue(new ChannelCloseFailed());
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#close-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-close');
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
       elementVisibilityChanged(1);
       await flushPromises();
@@ -152,44 +164,38 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should dismiss the dialog when cancel is pressed', function() {
+    test('close the confirmation when the user presses cancel', async () => {
       raiden.closeChannel = jest.fn().mockReturnValue(null);
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#close-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-close');
+      await flushPromises();
       wrapper.find('#cancel-278').trigger('click');
       elementVisibilityChanged(1);
       expect(raiden.closeChannel).toHaveBeenCalledTimes(0);
     });
   });
 
-  describe('depositing in a channel', () => {
+  describe('deposit in a channel', () => {
     beforeEach(() => {
       raiden.deposit = jest.fn();
     });
 
-    test('depositing 0.0 should just dismiss', async () => {
+    test('deposit to the channel when the user confirms the action', async () => {
       raiden.deposit.mockResolvedValueOnce(undefined);
       wrapper.find('#channel-278').trigger('click');
-      wrapper.find('#deposit-0').trigger('click');
-      elementVisibilityChanged(0, 'channel-278-deposit');
       await wrapper.vm.$nextTick();
-      wrapper.find('#confirm-278').trigger('click');
-      elementVisibilityChanged(1);
-      await flushPromises();
-      expect(wrapper.vm.$data.selectedChannel).toBeNull();
-      expect(raiden.deposit).toHaveBeenCalledTimes(0);
-    });
-
-    it('should deposit to the channel when confirmed', async function() {
-      raiden.deposit.mockResolvedValueOnce(undefined);
-      wrapper.find('#channel-278').trigger('click');
       wrapper.find('#deposit-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-deposit');
+      await flushPromises();
       mockInput(wrapper, '0.5');
       await wrapper.vm.$nextTick();
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
+      await wrapper.vm.$nextTick();
       elementVisibilityChanged(1);
+      await flushPromises();
       expect(wrapper.vm.$data.selectedChannel).toBeNull();
 
       await flushPromises();
@@ -201,13 +207,16 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show a success message on deposit success', async function() {
+    test('show a success message when the deposit is successful', async () => {
       raiden.deposit.mockResolvedValueOnce(undefined);
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#deposit-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-deposit');
+      await flushPromises();
       mockInput(wrapper, '0.5');
       await wrapper.vm.$nextTick();
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
       elementVisibilityChanged(1);
       await flushPromises();
@@ -216,9 +225,10 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show an error message on deposit failure', async function() {
+    test('show an error message when the deposit fails', async () => {
       raiden.deposit.mockRejectedValue(new ChannelDepositFailed());
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#deposit-0').trigger('click');
       expect(wrapper.emitted()['visible-changed'][0][0]).toBe(
         'channel-278-deposit'
@@ -226,8 +236,10 @@ describe('ChannelList.vue', function() {
       wrapper.setProps({
         visible: 'channel-278-deposit'
       });
+      await flushPromises();
       mockInput(wrapper, '0.5');
       await wrapper.vm.$nextTick();
+      await flushPromises();
       wrapper.find('#confirm-278').trigger('click');
       expect(wrapper.emitted()['visible-changed'][1][0]).toBe('');
       wrapper.setProps({
@@ -239,27 +251,32 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should dismiss the dialog when cancel is pressed', function() {
+    test('dismiss the dialog when the user presses cancel', async () => {
       raiden.deposit.mockResolvedValueOnce(undefined);
       wrapper.find('#channel-278').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#deposit-0').trigger('click');
       elementVisibilityChanged(0, 'channel-278-deposit');
+      await flushPromises();
       wrapper.find('#cancel-278').trigger('click');
       elementVisibilityChanged(1);
       expect(raiden.deposit).toHaveBeenCalledTimes(0);
     });
   });
 
-  describe('settling a channel', function() {
-    it('should settle the channel when confirmed', async function() {
+  describe('settle a channel', () => {
+    test('settle the channel when the user confirms the action', async () => {
       raiden.settleChannel = jest.fn().mockReturnValue('thxhash');
       const $data = wrapper.vm.$data;
 
       wrapper.find('#channel-280').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#settle-2').trigger('click');
       elementVisibilityChanged(0, 'channel-280-settle');
+      await flushPromises();
       wrapper.find('#confirm-280').trigger('click');
       elementVisibilityChanged(1);
+      await wrapper.vm.$nextTick();
       expect($data.selectedChannel).toBeNull();
 
       await flushPromises();
@@ -270,11 +287,13 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show a success message when settle succeeds', async function() {
+    test('show a success message when the settle is successful', async () => {
       raiden.settleChannel = jest.fn().mockReturnValue('thxhash');
       wrapper.find('#channel-280').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#settle-2').trigger('click');
       elementVisibilityChanged(0, 'channel-280-settle');
+      await flushPromises();
       wrapper.find('#confirm-280').trigger('click');
       elementVisibilityChanged(1);
       await flushPromises();
@@ -283,13 +302,15 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should show an error message on settle failure', async function() {
+    test('show an error message when settle fails', async () => {
       raiden.settleChannel = jest
         .fn()
         .mockRejectedValue(new ChannelSettleFailed());
       wrapper.find('#channel-280').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#settle-2').trigger('click');
       elementVisibilityChanged(0, 'channel-280-settle');
+      await flushPromises();
       wrapper.find('#confirm-280').trigger('click');
       elementVisibilityChanged(1);
       await flushPromises();
@@ -298,13 +319,15 @@ describe('ChannelList.vue', function() {
       );
     });
 
-    it('should dismiss the dialog when cancel is pressed', function() {
+    test('dismiss the dialog when the user presses cancel', async () => {
       raiden.settleChannel = jest
         .fn()
         .mockRejectedValue(new ChannelSettleFailed());
       wrapper.find('#channel-280').trigger('click');
+      await wrapper.vm.$nextTick();
       wrapper.find('#settle-2').trigger('click');
       elementVisibilityChanged(0, 'channel-280-settle');
+      await flushPromises();
       wrapper.find('#cancel-280').trigger('click');
       elementVisibilityChanged(1);
       expect(raiden.settleChannel).toHaveBeenCalledTimes(0);

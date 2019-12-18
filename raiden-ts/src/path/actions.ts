@@ -14,13 +14,16 @@ type ServiceId = {
   serviceAddress: Address;
 };
 
-export const pathFind = createStandardAction('pathFind')<{ paths?: Paths; pfs?: PFS }, PathId>();
+export const pathFind = createStandardAction('pathFind')<
+  { paths?: Paths; pfs?: PFS | null },
+  PathId
+>();
 
 export const pathFound = createStandardAction('pathFound')<{ paths: Paths }, PathId>();
 
-export const pathFindFailed = createStandardAction('pathFindFailed').map(
-  (payload: Error, meta: PathId) => ({ payload, error: true, meta }),
-);
+export const pathFindFailed = createStandardAction(
+  'pathFindFailed',
+).map((payload: Error, meta: PathId) => ({ payload, error: true, meta }));
 
 export const pfsListUpdated = createStandardAction('pfsListUpdated')<{
   pfsList: readonly Address[];

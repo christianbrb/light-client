@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/camelcase */
 import { of, BehaviorSubject, EMPTY, timer } from 'rxjs';
-import { first, takeUntil, toArray } from 'rxjs/operators';
+import { first, takeUntil, toArray, pluck, withLatestFrom } from 'rxjs/operators';
 import { bigNumberify, defaultAbiCoder } from 'ethers/utils';
 import { Zero, AddressZero, One } from 'ethers/constants';
 import { getType } from 'typesafe-actions';
@@ -59,7 +59,13 @@ describe('PFS: pathFindServiceEpic', () => {
   } = epicFixtures(depsMock);
 
   const openBlock = 121,
-    state$ = depsMock.stateOutput$;
+    state$ = new BehaviorSubject(state);
+
+  state$
+    .pipe(withLatestFrom(depsMock.latest$))
+    .subscribe(([state, l]) => depsMock.latest$.next({ ...l, state, config: state.config }));
+
+  afterAll(() => state$.complete());
 
   const result = { result: [{ path: [partner, target], estimated_fee: 1234 }] },
     fetch = jest.fn(async () => ({
@@ -194,7 +200,7 @@ describe('PFS: pathFindServiceEpic', () => {
           {
             pfs: {
               address: pfsAddress,
-              url: depsMock.config$.value.pfs!,
+              url: state.config.pfs!,
               rtt: 3,
               price: One as UInt<32>,
               token: pfsTokenAddress,
@@ -207,11 +213,13 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
-    const { pfsSafetyMargin } = depsMock.config$.value;
+    const { pfsSafetyMargin } = state.config;
     await expect(
       pathFindServiceEpic(action$, state$, depsMock).toPromise(),
     ).resolves.toMatchObject(
@@ -251,11 +259,13 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
-    const { pfsSafetyMargin } = depsMock.config$.value;
+    const { pfsSafetyMargin } = state.config;
     await expect(
       pathFindServiceEpic(action$, state$, depsMock).toPromise(),
     ).resolves.toMatchObject(
@@ -284,24 +294,19 @@ describe('PFS: pathFindServiceEpic', () => {
       pfsAddress1 = '0x0800000000000000000000000000000000000091' as Address,
       pfsAddress2 = '0x0800000000000000000000000000000000000092' as Address,
       pfsAddress3 = '0x0800000000000000000000000000000000000093' as Address,
-      pfsAddress4 = '0x0800000000000000000000000000000000000094' as Address,
-      pfsAddress5 = '0x0800000000000000000000000000000000000095' as Address,
       action$ = of(
         pfsListUpdated({
-          pfsList: [pfsAddress1, pfsAddress2, pfsAddress3, pfsAddress4, pfsAddress5, pfsAddress],
+          pfsList: [pfsAddress1, pfsAddress2, pfsAddress3, pfsAddress],
         }),
         matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
         matrixPresenceUpdate({ userId: targetUserId, available: true }, { address: target }),
         pathFind({}, { tokenNetwork, target, value }),
       );
 
-    // pfsAddress1&2 urls call will fail
-    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('');
-    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('http://not.https.url');
-    // pfsAddress3 will be accepted with default https:// schema
+    // pfsAddress1 will be accepted with default https:// schema
     depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('domain.only.url');
 
-    const pfsInfoResponse3 = { ...pfsInfoResponse, payment_address: pfsAddress3 };
+    const pfsInfoResponse1 = { ...pfsInfoResponse, payment_address: pfsAddress1 };
     fetch.mockImplementationOnce(
       async () =>
         new Promise(resolve =>
@@ -310,29 +315,29 @@ describe('PFS: pathFindServiceEpic', () => {
               resolve({
                 ok: true,
                 status: 200,
-                json: jest.fn(async () => pfsInfoResponse3),
-                text: jest.fn(async () => losslessStringify(pfsInfoResponse3)),
+                json: jest.fn(async () => pfsInfoResponse1),
+                text: jest.fn(async () => losslessStringify(pfsInfoResponse1)),
               }),
             23, // higher rtt for this PFS
           ),
         ),
     );
 
-    // 4 & 5, test sorting by price info
-    const pfsInfoResponse4 = { ...pfsInfoResponse, payment_address: pfsAddress4, price_info: 5 };
+    // 2 & 3, test sorting by price info
+    const pfsInfoResponse2 = { ...pfsInfoResponse, payment_address: pfsAddress2, price_info: 5 };
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: jest.fn(async () => pfsInfoResponse4),
-      text: jest.fn(async () => losslessStringify(pfsInfoResponse4)),
+      json: jest.fn(async () => pfsInfoResponse2),
+      text: jest.fn(async () => losslessStringify(pfsInfoResponse2)),
     });
 
-    const pfsInfoResponse5 = { ...pfsInfoResponse, payment_address: pfsAddress5, price_info: 10 };
+    const pfsInfoResponse3 = { ...pfsInfoResponse, payment_address: pfsAddress3, price_info: 10 };
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: jest.fn(async () => pfsInfoResponse5),
-      text: jest.fn(async () => losslessStringify(pfsInfoResponse5)),
+      json: jest.fn(async () => pfsInfoResponse3),
+      text: jest.fn(async () => losslessStringify(pfsInfoResponse3)),
     });
 
     // pfsAddress succeeds main response
@@ -346,11 +351,13 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
-    const { pfsSafetyMargin } = depsMock.config$.value;
+    const { pfsSafetyMargin } = state.config;
     await expect(
       pathFindServiceEpic(action$, state$, depsMock)
         .pipe(toArray())
@@ -378,7 +385,7 @@ describe('PFS: pathFindServiceEpic', () => {
         { tokenNetwork, target, value },
       ),
     ]);
-    expect(fetch).toHaveBeenCalledTimes(4 + 1 + 1); // 3,4,5,0 addresses, + last iou + paths for chosen one
+    expect(fetch).toHaveBeenCalledTimes(4 + 1 + 1); // 1,2,3,0 addresses, + last iou + paths for chosen one
     expect(fetch).toHaveBeenCalledWith(
       expect.stringMatching(/^https:\/\/domain.only.url\/.*\/info/),
       expect.anything(),
@@ -397,14 +404,19 @@ describe('PFS: pathFindServiceEpic', () => {
     const value = bigNumberify(100) as UInt<32>,
       action$ = of(
         pfsListUpdated({
-          pfsList: [pfsAddress],
+          pfsList: [pfsAddress, pfsAddress, pfsAddress],
         }),
         matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
         matrixPresenceUpdate({ userId: targetUserId, available: true }, { address: target }),
         pathFind({}, { tokenNetwork, target, value }),
       );
 
-    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('not_a_url');
+    // invalid url
+    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('""');
+    // empty url
+    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('');
+    // invalid schema
+    depsMock.serviceRegistryContract.functions.urls.mockResolvedValueOnce('http://not.https.url');
 
     await expect(
       pathFindServiceEpic(action$, state$, depsMock).toPromise(),
@@ -438,7 +450,9 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
@@ -620,7 +634,9 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
@@ -684,7 +700,9 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: true,
       status: 404,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
@@ -820,7 +838,9 @@ describe('PFS: pathFindServiceEpic', () => {
     fetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
-      json: jest.fn(async () => {}),
+      json: jest.fn(async () => {
+        /* error */
+      }),
       text: jest.fn(async () => losslessStringify({})),
     });
 
@@ -951,9 +971,9 @@ describe('PFS: pathFindServiceEpic', () => {
     expect.assertions(1);
 
     // disable pfs
-    depsMock.config$.next({
-      ...depsMock.config$.value,
-      pfs: null,
+    depsMock.latest$.pipe(first()).subscribe(l => {
+      const state = { ...l.state, config: { ...l.state.config, pfs: null } };
+      depsMock.latest$.next({ ...l, state, config: state.config });
     });
 
     const value = bigNumberify(100) as UInt<32>,
@@ -1032,7 +1052,7 @@ describe('PFS: pfsCapacityUpdateEpic', () => {
             signature: expect.any(String),
           }),
         },
-        { roomName: expect.stringMatching(depsMock.config$.value.pfsRoom!) },
+        { roomName: expect.stringMatching(state.config.pfsRoom!) },
       ),
     );
   });
@@ -1068,7 +1088,13 @@ describe('PFS: pfsCapacityUpdateEpic', () => {
 describe('PFS: pfsServiceRegistryMonitorEpic', () => {
   const depsMock = raidenEpicDeps(),
     { state, pfsAddress } = epicFixtures(depsMock),
-    state$ = depsMock.stateOutput$;
+    state$ = new BehaviorSubject(state);
+
+  state$
+    .pipe(withLatestFrom(depsMock.latest$))
+    .subscribe(([state, l]) => depsMock.latest$.next({ ...l, state, config: state.config }));
+
+  afterAll(() => state$.complete());
 
   beforeEach(() => {
     state$.next(state); // reset state
@@ -1094,7 +1120,9 @@ describe('PFS: pfsServiceRegistryMonitorEpic', () => {
         [bigNumberify(Math.floor(Date.now() / 1000) + 1), Zero, AddressZero],
       );
 
-    expect(depsMock.config$.value.pfs).toBeUndefined();
+    await expect(
+      depsMock.config$.pipe(pluck('pfs'), first()).toPromise(),
+    ).resolves.toBeUndefined();
     const promise = pfsServiceRegistryMonitorEpic(EMPTY, state$, depsMock)
       .pipe(first())
       .toPromise();
@@ -1167,7 +1195,7 @@ describe('PFS: pfsServiceRegistryMonitorEpic', () => {
 
   test('noop if config.pfs is set', async () => {
     expect.assertions(2);
-    expect(depsMock.config$.value.pfs).toBeDefined();
+    await expect(depsMock.config$.pipe(pluck('pfs'), first()).toPromise()).resolves.toBeDefined();
 
     const validTill = bigNumberify(Math.floor(Date.now() / 1000) + 86400), // tomorrow
       registeredEncoded = defaultAbiCoder.encode(

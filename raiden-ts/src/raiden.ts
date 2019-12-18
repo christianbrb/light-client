@@ -1,48 +1,19 @@
+import './polyfills';
 import { Signer } from 'ethers';
-import { Wallet } from 'ethers/wallet';
 import { AsyncSendable, Web3Provider, JsonRpcProvider } from 'ethers/providers';
 import { Network, BigNumber, BigNumberish, bigNumberify } from 'ethers/utils';
 import { Zero } from 'ethers/constants';
 
 import { MatrixClient } from 'matrix-js-sdk';
-import { Middleware, applyMiddleware, createStore, Store } from 'redux';
+import { applyMiddleware, createStore, Store } from 'redux';
 import { createEpicMiddleware, EpicMiddleware } from 'redux-observable';
 import { isActionOf } from 'typesafe-actions';
 import { createLogger } from 'redux-logger';
 
-import {
-  debounce,
-  findKey,
-  transform,
-  constant,
-  memoize,
-  pick,
-  isEmpty,
-  merge as _merge,
-} from 'lodash';
-import {
-  Observable,
-  Subject,
-  BehaviorSubject,
-  AsyncSubject,
-  from,
-  merge,
-  defer,
-  EMPTY,
-  ReplaySubject,
-} from 'rxjs';
-import {
-  first,
-  filter,
-  map,
-  distinctUntilChanged,
-  scan,
-  concatMap,
-  mergeMap,
-  pluck,
-} from 'rxjs/operators';
+import { constant, memoize, isEmpty } from 'lodash';
+import { Observable, AsyncSubject, merge, defer, EMPTY, ReplaySubject, of } from 'rxjs';
+import { first, filter, map, mergeMap, skip } from 'rxjs/operators';
 
-import './polyfills';
 import { TokenNetworkRegistryFactory } from './contracts/TokenNetworkRegistryFactory';
 import { TokenNetworkFactory } from './contracts/TokenNetworkFactory';
 import { HumanStandardTokenFactory } from './contracts/HumanStandardTokenFactory';
@@ -50,20 +21,12 @@ import { ServiceRegistryFactory } from './contracts/ServiceRegistryFactory';
 import { CustomTokenFactory } from './contracts/CustomTokenFactory';
 import { UserDepositFactory } from './contracts/UserDepositFactory';
 
-import ropstenDeploy from './deployment/deployment_ropsten.json';
-import rinkebyDeploy from './deployment/deployment_rinkeby.json';
-import goerliDeploy from './deployment/deployment_goerli.json';
-import ropstenServicesDeploy from './deployment/deployment_services_ropsten.json';
-import rinkebyServicesDeploy from './deployment/deployment_services_rinkeby.json';
-import goerliServicesDeploy from './deployment/deployment_services_goerli.json';
-
 import { ContractsInfo, RaidenEpicDeps } from './types';
 import { ShutdownReason } from './constants';
-import { RaidenState, makeInitialState, encodeRaidenState, decodeRaidenState } from './state';
+import { RaidenState, getState } from './state';
 import { RaidenConfig } from './config';
 import { RaidenChannels } from './channels/state';
-import { channelAmounts } from './channels/utils';
-import { SentTransfer, SentTransfers, RaidenSentTransfer } from './transfers/state';
+import { RaidenSentTransfer } from './transfers/state';
 import { raidenReducer } from './reducer';
 import { raidenRootEpic } from './epics';
 import {
@@ -93,13 +56,21 @@ import {
   matrixRequestMonitorPresence,
 } from './transport/actions';
 import { transfer, transferFailed, transferSigned } from './transfers/actions';
-import { makeSecret, raidenSentTransfer, getSecrethash, makePaymentId } from './transfers/utils';
-import { pathFind, pathFound, pathFindFailed, pfsListUpdated } from './path/actions';
+import { makeSecret, getSecrethash, makePaymentId } from './transfers/utils';
+import { pathFind, pathFound, pathFindFailed } from './path/actions';
 import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './path/types';
 import { pfsListInfo } from './path/utils';
-import { Address, PrivateKey, Secret, Storage, Hash, UInt, decode, isntNil } from './utils/types';
+import { Address, Secret, Storage, Hash, UInt, decode, assert } from './utils/types';
 import { patchSignSend } from './utils/ethers';
-import { losslessParse } from './utils/data';
+import { pluckDistinct } from './utils/rx';
+import {
+  getContracts,
+  getSigner,
+  initTransfers$,
+  mapTokenToPartner,
+  chooseOnchainAccount,
+  getContractWithSigner,
+} from './helpers';
 
 export class Raiden {
   private readonly store: Store<RaidenState, RaidenAction>;
@@ -146,11 +117,6 @@ export class Raiden {
   public userDepositTokenAddress: () => Promise<Address>;
 
   /**
-   * Store latest seen pfsListUpdated action payload for findPFS
-   */
-  private readonly pfsList$: ReplaySubject<readonly Address[]>;
-
-  /**
    * Get constant token details from token contract, caches it.
    * Rejects only if 'token' contract doesn't define totalSupply and decimals methods.
    * name and symbol may be undefined, as they aren't actually part of ERC20 standard, although
@@ -182,6 +148,7 @@ export class Raiden {
     signer: Signer,
     contractsInfo: ContractsInfo,
     state: RaidenState,
+    main?: { address: Address; signer: Signer },
   ) {
     this.resolveName = provider.resolveName.bind(provider) as (name: string) => Promise<Address>;
     const address = state.address;
@@ -189,74 +156,18 @@ export class Raiden {
     // use next from latest known blockNumber as start block when polling
     provider.resetEventsBlock(state.blockNumber + 1);
 
-    const state$ = new BehaviorSubject<RaidenState>(state);
-    this.state$ = state$;
+    const latest$: RaidenEpicDeps['latest$'] = new ReplaySubject(1);
 
-    const action$ = new Subject<RaidenAction>();
-    this.action$ = action$;
-
-    this.channels$ = state$.pipe(
-      map(state =>
-        transform(
-          // transform state.channels to token-partner-raidenChannel map
-          state.channels,
-          (result, partner2channel, tokenNetwork) => {
-            const token = findKey(state.tokens, tn => tn === tokenNetwork) as Address | undefined;
-            if (!token) return; // shouldn't happen, token mapping is always bi-directional
-            result[token] = transform(
-              // transform Channel to RaidenChannel, with more info
-              partner2channel,
-              (partner2raidenChannel, channel, partner) => {
-                const {
-                  ownDeposit,
-                  partnerDeposit,
-                  ownBalance: balance,
-                  ownCapacity: capacity,
-                } = channelAmounts(channel);
-
-                partner2raidenChannel[partner] = {
-                  state: channel.state,
-                  ...pick(channel, ['id', 'settleTimeout', 'openBlock', 'closeBlock']),
-                  token,
-                  tokenNetwork: tokenNetwork as Address,
-                  partner: partner as Address,
-                  ownDeposit,
-                  partnerDeposit,
-                  balance,
-                  capacity,
-                };
-              },
-            );
-          },
-        ),
-      ),
-    );
-
-    this.transfers$ = state$.pipe(
-      pluck('sent'),
-      distinctUntilChanged(),
-      concatMap(sent => from(Object.entries(sent))),
-      /* this scan stores a reference to each [key,value] in 'acc', and emit as 'changed' iff it
-       * changes from last time seen. It relies on value references changing only if needed */
-      scan<[string, SentTransfer], { acc: SentTransfers; changed?: SentTransfer }>(
-        ({ acc }, [secrethash, sent]) =>
-          // if ref didn't change, emit previous accumulator, without 'changed' value
-          acc[secrethash] === sent
-            ? { acc }
-            : // else, update ref in 'acc' and emit value in 'changed' prop
-              { acc: { ...acc, [secrethash]: sent }, changed: sent },
-        { acc: {} },
-      ),
-      pluck('changed'),
-      filter(isntNil), // filter out if reference didn't change from last emit
-      // from here, we get SentTransfer objects which changed from previous state (all on first)
-      map(raidenSentTransfer),
-    );
-
-    this.events$ = action$.pipe(filter(isActionOf(Object.values(RaidenEvents))));
+    // pipe cached state
+    this.state$ = latest$.pipe(pluckDistinct('state'));
+    // pipe action, skipping cached
+    this.action$ = latest$.pipe(pluckDistinct('action'), skip(1));
+    this.channels$ = this.state$.pipe(map(state => mapTokenToPartner(state)));
+    this.transfers$ = initTransfers$(this.state$);
+    this.events$ = this.action$.pipe(filter(isActionOf(Object.values(RaidenEvents))));
 
     this.getTokenInfo = memoize(async function(this: Raiden, token: string) {
-      if (!Address.is(token)) throw new Error('Invalid address');
+      assert(Address.is(token), 'Invalid address');
       const tokenContract = this.deps.getTokenContract(token);
       const [totalSupply, decimals, name, symbol] = await Promise.all([
         tokenContract.functions.totalSupply(),
@@ -264,35 +175,14 @@ export class Raiden {
         tokenContract.functions.name().catch(constant(undefined)),
         tokenContract.functions.symbol().catch(constant(undefined)),
       ]);
+      // workaround for https://github.com/microsoft/TypeScript/issues/33752
+      assert(totalSupply && decimals != null, 'Not a token contract');
       return { totalSupply, decimals, name, symbol };
     });
 
-    // pipe pfsListUpdated action payloead to pfsList$ replay subject, to keep latest seen emission
-    // around. Epics don't need this, as they can monitor/multicast action$ directly
-    const pfsList$ = new ReplaySubject<readonly Address[]>(1);
-    this.pfsList$ = pfsList$;
-    action$
-      .pipe(
-        filter(isActionOf(pfsListUpdated)),
-        pluck('payload', 'pfsList'),
-      )
-      .subscribe(pfsList$);
-
-    const middlewares: Middleware[] = [
-      createLogger({
-        level: () =>
-          this.deps.config$.value.logger !== undefined
-            ? this.deps.config$.value.logger
-            : process.env.NODE_ENV === 'development'
-            ? 'debug'
-            : '',
-      }),
-    ];
-
     this.deps = {
-      stateOutput$: state$,
-      actionOutput$: action$,
-      config$: new BehaviorSubject<RaidenConfig>(state.config),
+      latest$,
+      config$: latest$.pipe(pluckDistinct('config')),
       matrix$: new AsyncSubject<MatrixClient>(),
       provider,
       network,
@@ -301,24 +191,35 @@ export class Raiden {
       contractsInfo,
       registryContract: TokenNetworkRegistryFactory.connect(
         contractsInfo.TokenNetworkRegistry.address,
-        signer,
+        main?.signer ?? signer,
       ),
       getTokenNetworkContract: memoize((address: Address) =>
-        TokenNetworkFactory.connect(address, signer),
+        TokenNetworkFactory.connect(address, main?.signer ?? signer),
       ),
       getTokenContract: memoize((address: Address) =>
-        HumanStandardTokenFactory.connect(address, signer),
+        HumanStandardTokenFactory.connect(address, main?.signer ?? signer),
       ),
       serviceRegistryContract: ServiceRegistryFactory.connect(
         contractsInfo.ServiceRegistry.address,
-        signer,
+        main?.signer ?? signer,
       ),
-      userDepositContract: UserDepositFactory.connect(contractsInfo.UserDeposit.address, signer),
+      userDepositContract: UserDepositFactory.connect(
+        contractsInfo.UserDeposit.address,
+        main?.signer ?? signer,
+      ),
+      main,
     };
 
     this.userDepositTokenAddress = memoize(
       async () => (await this.deps.userDepositContract.functions.token()) as Address,
     );
+
+    const loggerMiddleware = createLogger({
+      predicate: () =>
+        this.config.logger !== '' &&
+        (this.config.logger !== undefined || process.env.NODE_ENV === 'development'),
+      level: () => this.config.logger || 'debug',
+    });
 
     // minimum blockNumber of contracts deployment as start scan block
     this.epicMiddleware = createEpicMiddleware<
@@ -330,8 +231,9 @@ export class Raiden {
 
     this.store = createStore(
       raidenReducer,
-      state,
-      applyMiddleware(...middlewares, this.epicMiddleware),
+      // workaround for redux@4.0.4's error on DeepPartial<RaidenState>
+      state as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      applyMiddleware(loggerMiddleware, this.epicMiddleware),
     );
   }
 
@@ -360,6 +262,7 @@ export class Raiden {
    *     state$ changes and update them on whichever persistency option is used
    * @param contracts - Contracts deployment info
    * @param config - Raiden configuration
+   * @param subkey - Whether to use a derived subkey or not
    * @returns Promise to Raiden SDK client instance
    **/
   public static async create(
@@ -368,6 +271,7 @@ export class Raiden {
     storageOrState?: Storage | RaidenState | unknown,
     contracts?: ContractsInfo,
     config?: Partial<RaidenConfig>,
+    subkey?: true,
   ): Promise<Raiden> {
     let provider: JsonRpcProvider;
     if (typeof connection === 'string') {
@@ -385,103 +289,31 @@ export class Raiden {
 
     // if no ContractsInfo, try to populate from defaults
     if (!contracts) {
-      switch (network.name) {
-        case 'rinkeby':
-          contracts = ({
-            ...rinkebyDeploy.contracts,
-            ...rinkebyServicesDeploy.contracts,
-          } as unknown) as ContractsInfo;
-          break;
-        case 'ropsten':
-          contracts = ({
-            ...ropstenDeploy.contracts,
-            ...ropstenServicesDeploy.contracts,
-          } as unknown) as ContractsInfo;
-          break;
-        case 'goerli':
-          contracts = ({
-            ...goerliDeploy.contracts,
-            ...goerliServicesDeploy.contracts,
-          } as unknown) as ContractsInfo;
-          break;
-        default:
-          throw new Error(
-            `No deploy info provided nor recognized network: ${JSON.stringify(network)}`,
-          );
-      }
+      contracts = getContracts(network);
     }
 
-    let signer: Signer;
-    if (Signer.isSigner(account)) {
-      if (account.provider === provider) signer = account;
-      else if (account instanceof Wallet) signer = account.connect(provider);
-      else throw new Error(`Signer ${account} not connected to ${provider}`);
-    } else if (typeof account === 'number') {
-      // index of account in provider
-      signer = provider.getSigner(account);
-    } else if (Address.is(account)) {
-      // address
-      const accounts = await provider.listAccounts();
-      if (!accounts.includes(account))
-        throw new Error(`Account "${account}" not found in provider, got=${accounts}`);
-      signer = provider.getSigner(account);
-    } else if (PrivateKey.is(account)) {
-      // private key
-      signer = new Wallet(account, provider);
-    } else {
-      throw new Error('String account must be either a 0x-encoded address or private key');
-    }
-    const address = (await signer.getAddress()) as Address;
+    const { signer, address, main } = await getSigner(account, provider, subkey);
 
-    // build an initial state and default config!
-    let loadedState = makeInitialState({ network, address, contractsInfo: contracts }, { config });
+    // Build initial state or parse from storage
+    const { state, onState, onStateComplete } = await getState(
+      network,
+      contracts,
+      address,
+      storageOrState,
+      config,
+    );
 
-    // type guard
-    function isStorage(storageOrState: unknown): storageOrState is Storage {
-      return storageOrState && typeof (storageOrState as Storage).getItem === 'function';
-    }
+    assert(
+      address === state.address,
+      `Mismatch between provided account and loaded state: "${address}" !== "${state.address}"`,
+    );
+    assert(
+      network.chainId === state.chainId &&
+        contracts.TokenNetworkRegistry.address === state.registry,
+      `Mismatch between network or registry address and loaded state`,
+    );
 
-    let onState: ((state: RaidenState) => void) | undefined = undefined,
-      onStateComplete: (() => void) | undefined = undefined;
-
-    if (storageOrState && isStorage(storageOrState)) {
-      const ns = `raiden_${network.name || network.chainId}_${
-        contracts.TokenNetworkRegistry.address
-      }_${address}`;
-      const loaded = _merge(
-        {},
-        loadedState,
-        losslessParse((await storageOrState.getItem(ns)) || 'null'),
-      );
-
-      loadedState = decodeRaidenState(loaded);
-
-      // to be subscribed on raiden.state$
-      const debouncedState = debounce(
-        (state: RaidenState): void => {
-          storageOrState.setItem(ns, encodeRaidenState(state));
-        },
-        1000,
-        { maxWait: 5000 },
-      );
-      onState = debouncedState;
-      onStateComplete = () => debouncedState.flush();
-    } else if (storageOrState && RaidenState.is(storageOrState)) {
-      loadedState = storageOrState;
-    } else if (storageOrState /* typeof storageOrState === unknown */) {
-      loadedState = decodeRaidenState(storageOrState);
-    }
-    if (address !== loadedState.address)
-      throw new Error(
-        `Mismatch between provided account and loaded state: "${address}" !== "${loadedState.address}"`,
-      );
-    if (
-      network.chainId !== loadedState.chainId ||
-      contracts.TokenNetworkRegistry.address !== loadedState.registry
-    )
-      throw new Error(`Mismatch between network or registry address and loaded state`);
-
-    const raiden = new Raiden(provider, network, signer, contracts, loadedState);
+    const raiden = new Raiden(provider, network, signer, contracts, state, main);
     if (onState) raiden.state$.subscribe(onState, onStateComplete, onStateComplete);
     return raiden;
   }
@@ -492,7 +324,7 @@ export class Raiden {
    * No event should be emitted before start is called
    */
   public start(): void {
-    if (!this.epicMiddleware) throw new Error('Already started or stopped!');
+    assert(this.epicMiddleware, 'Already started or stopped!');
     this.epicMiddleware.run(raidenRootEpic);
     // prevent start from being called again, turns this.started to true
     this.epicMiddleware = undefined;
@@ -525,12 +357,21 @@ export class Raiden {
   }
 
   /**
-   * Get current account address
+   * Get current account address (subkey's address, if subkey is being used)
    *
    * @returns Instance address
    */
   public get address(): Address {
     return this.deps.address;
+  }
+
+  /**
+   * Get main account address (if subkey is being used, undefined otherwise)
+   *
+   * @returns Main account address
+   */
+  public get mainAddress(): Address | undefined {
+    return this.deps.main?.address;
   }
 
   /**
@@ -576,8 +417,8 @@ export class Raiden {
    * @returns BigNumber of ETH balance
    */
   public getBalance(address?: string): Promise<BigNumber> {
-    address = address || this.address;
-    if (!Address.is(address)) throw new Error('Invalid address');
+    address = address ?? chooseOnchainAccount(this.deps, this.config.subkey).address;
+    assert(Address.is(address), 'Invalid address');
     return this.deps.provider.getBalance(address);
   }
 
@@ -589,10 +430,10 @@ export class Raiden {
    * @returns BigNumber containing address's token balance
    */
   public async getTokenBalance(token: string, address?: string): Promise<BigNumber> {
-    address = address || this.address;
-    if (!Address.is(address) || !Address.is(token)) throw new Error('Invalid address');
-    const tokenContract = this.deps.getTokenContract(token);
+    address = address ?? chooseOnchainAccount(this.deps, this.config.subkey).address;
+    assert(Address.is(address) && Address.is(token), 'Invalid address');
 
+    const tokenContract = this.deps.getTokenContract(token);
     return tokenContract.functions.balanceOf(address);
   }
 
@@ -620,17 +461,20 @@ export class Raiden {
    * @param partner - Partner address
    * @param options - (optional) option parameter
    * @param options.settleTimeout - Custom, one-time settle timeout
+   * @param options.subkey - Whether to use the subkey for on-chain tx or main account (default)
    * @returns txHash of channelOpen call, iff it succeeded
    */
   public async openChannel(
     token: string,
     partner: string,
-    options: { settleTimeout?: number } = {},
+    options: { settleTimeout?: number; subkey?: boolean } = {},
   ): Promise<Hash> {
-    if (!Address.is(token) || !Address.is(partner)) throw new Error('Invalid address');
+    assert(Address.is(token) && Address.is(partner), 'Invalid address');
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
+    assert(!options.subkey || this.deps.main, "Can't send tx from subkey if not set");
+
     const promise = this.action$
       .pipe(
         filter(isActionOf([channelOpened, channelOpenFailed])),
@@ -645,7 +489,7 @@ export class Raiden {
       )
       .toPromise();
 
-    this.store.dispatch(channelOpen({ ...options }, { tokenNetwork, partner }));
+    this.store.dispatch(channelOpen(options, { tokenNetwork, partner }));
 
     return promise;
   }
@@ -656,17 +500,24 @@ export class Raiden {
    * @param token - Token address on currently configured token network registry
    * @param partner - Partner address
    * @param amount - Number of tokens to deposit on channel
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    (and is also the account used as source of the deposit tokens).
+   *    Set this to true if one wants to force sending the transaction with the subkey, and using
+   *    tokens held in the subkey.
    * @returns txHash of setTotalDeposit call, iff it succeeded
    */
   public async depositChannel(
     token: string,
     partner: string,
     amount: BigNumberish,
+    { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    if (!Address.is(token) || !Address.is(partner)) throw new Error('Invalid address');
+    assert(Address.is(token) && Address.is(partner), 'Invalid address');
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
 
     const deposit = decode(UInt(32), amount);
 
@@ -683,7 +534,7 @@ export class Raiden {
         }),
       )
       .toPromise();
-    this.store.dispatch(channelDeposit({ deposit }, { tokenNetwork, partner }));
+    this.store.dispatch(channelDeposit({ deposit, subkey }, { tokenNetwork, partner }));
     return promise;
   }
 
@@ -698,13 +549,22 @@ export class Raiden {
    *
    * @param token - Token address on currently configured token network registry
    * @param partner - Partner address
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Set this to true if one wants to force sending the transaction with the subkey
    * @returns txHash of closeChannel call, iff it succeeded
    */
-  public async closeChannel(token: string, partner: string): Promise<Hash> {
-    if (!Address.is(token) || !Address.is(partner)) throw new Error('Invalid address');
+  public async closeChannel(
+    token: string,
+    partner: string,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
+    assert(Address.is(token) && Address.is(partner), 'Invalid address');
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+
     const promise = this.action$
       .pipe(
         filter(isActionOf([channelClosed, channelCloseFailed])),
@@ -718,7 +578,7 @@ export class Raiden {
         }),
       )
       .toPromise();
-    this.store.dispatch(channelClose(undefined, { tokenNetwork, partner }));
+    this.store.dispatch(channelClose(subkey ? { subkey } : undefined, { tokenNetwork, partner }));
     return promise;
   }
 
@@ -732,13 +592,22 @@ export class Raiden {
    *
    * @param token - Token address on currently configured token network registry
    * @param partner - Partner address
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Set this to true if one wants to force sending the transaction with the subkey
    * @returns txHash of settleChannel call, iff it succeeded
    */
-  public async settleChannel(token: string, partner: string): Promise<Hash> {
-    if (!Address.is(token) || !Address.is(partner)) throw new Error('Invalid address');
+  public async settleChannel(
+    token: string,
+    partner: string,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
+    assert(Address.is(token) && Address.is(partner), 'Invalid address');
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+
     // wait for the corresponding success or error action
     const promise = this.action$
       .pipe(
@@ -753,7 +622,7 @@ export class Raiden {
         }),
       )
       .toPromise();
-    this.store.dispatch(channelSettle(undefined, { tokenNetwork, partner }));
+    this.store.dispatch(channelSettle(subkey ? { subkey } : undefined, { tokenNetwork, partner }));
     return promise;
   }
 
@@ -768,7 +637,7 @@ export class Raiden {
   public async getAvailability(
     address: string,
   ): Promise<{ userId: string; available: boolean; ts: number }> {
-    if (!Address.is(address)) throw new Error('Invalid address');
+    assert(Address.is(address), 'Invalid address');
     const promise = this.action$
       .pipe(
         filter(isActionOf([matrixPresenceUpdate, matrixRequestMonitorPresenceFailed])),
@@ -820,29 +689,32 @@ export class Raiden {
       pfs?: RaidenPFS;
     } = {},
   ): Promise<Hash> {
-    if (!Address.is(token) || !Address.is(target)) throw new Error('Invalid address');
+    assert(Address.is(token) && Address.is(target), 'Invalid address');
     const tokenNetwork = this.state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
 
-    const decodedValue = decode(UInt(32), value),
-      paymentId = options.paymentId ? decode(UInt(8), options.paymentId) : makePaymentId(),
-      paths = options.paths ? decode(Paths, options.paths) : undefined,
-      pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
+    const decodedValue = decode(UInt(32), value);
+    const paymentId = options.paymentId ? decode(UInt(8), options.paymentId) : makePaymentId();
+    const paths = options.paths ? decode(Paths, options.paths) : undefined;
+    const pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
 
-    if (options.secret !== undefined && !Secret.is(options.secret))
-      throw new Error('Invalid options.secret');
-    if (options.secrethash !== undefined && !Hash.is(options.secrethash))
-      throw new Error('Invalid options.secrethash');
+    assert(options.secret === undefined || Secret.is(options.secret), 'Invalid options.secret');
+    assert(
+      options.secrethash === undefined || Hash.is(options.secrethash),
+      'Invalid options.secrethash',
+    );
 
     // use provided secret or create one if no secrethash was provided
     const secret = options.secret
-        ? options.secret
-        : !options.secrethash
-        ? makeSecret()
-        : undefined,
-      secrethash = options.secrethash || getSecrethash(secret!);
-    if (secret && getSecrethash(secret) !== secrethash)
-      throw new Error('Provided secrethash must match the sha256 hash of provided secret');
+      ? options.secret
+      : !options.secrethash
+      ? makeSecret()
+      : undefined;
+    const secrethash = options.secrethash || getSecrethash(secret!);
+    assert(
+      !secret || getSecrethash(secret) === secrethash,
+      'Provided secrethash must match the sha256 hash of provided secret',
+    );
 
     return merge(
       // wait for pathFind response
@@ -922,13 +794,13 @@ export class Raiden {
     target: string,
     value: BigNumberish,
     options: { pfs?: RaidenPFS } = {},
-  ): Promise<RaidenPaths> {
-    if (!Address.is(token) || !Address.is(target)) throw new Error('Invalid address');
+  ): Promise<Paths> {
+    assert(Address.is(token) && Address.is(target), 'Invalid address');
     const tokenNetwork = this.state.tokens[token];
-    if (!tokenNetwork) throw new Error('Unknown token network');
+    assert(tokenNetwork, 'Unknown token network');
 
-    const decodedValue = decode(UInt(32), value),
-      pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
+    const decodedValue = decode(UInt(32), value);
+    const pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
 
     const promise = this.action$
       .pipe(
@@ -937,7 +809,7 @@ export class Raiden {
           action =>
             action.meta.tokenNetwork === tokenNetwork &&
             action.meta.target === target &&
-            action.meta.value.eq(value),
+            action.meta.value.eq(decodedValue),
         ),
         map(action => {
           if (isActionOf(pathFindFailed, action)) throw action.payload;
@@ -946,6 +818,46 @@ export class Raiden {
       )
       .toPromise();
     this.store.dispatch(pathFind({ pfs }, { tokenNetwork, target, value: decodedValue }));
+    return promise;
+  }
+
+  /**
+   * Checks if a direct transfer of token to target could be performed and returns it on a
+   * single-element array of Paths
+   *
+   * @param token - Token address on currently configured token network registry
+   * @param target - Target address (must be getAvailability before)
+   * @param value - Minimum capacity required on route
+   * @returns Promise to a [Raiden]Paths array containing the single, direct route, or undefined
+   */
+  public async directRoute(
+    token: string,
+    target: string,
+    value: BigNumberish,
+  ): Promise<Paths | undefined> {
+    assert(Address.is(token) && Address.is(target), 'Invalid address');
+    const tokenNetwork = this.state.tokens[token];
+    assert(tokenNetwork, 'Unknown token network');
+
+    const decodedValue = decode(UInt(32), value);
+
+    const promise = this.action$
+      .pipe(
+        filter(isActionOf([pathFound, pathFindFailed])),
+        first(
+          action =>
+            action.meta.tokenNetwork === tokenNetwork &&
+            action.meta.target === target &&
+            action.meta.value.eq(decodedValue),
+        ),
+        map(action => {
+          if (isActionOf(pathFindFailed, action)) return undefined;
+          return action.payload.paths;
+        }),
+      )
+      .toPromise();
+    // dispatch a pathFind with pfs disabled, to force checking for a direct route
+    this.store.dispatch(pathFind({ pfs: null }, { tokenNetwork, target, value: decodedValue }));
     return promise;
   }
 
@@ -960,12 +872,15 @@ export class Raiden {
    * @returns Promise to array of PFS, which is the interface which describes a PFS
    */
   public async findPFS(): Promise<PFS[]> {
-    if (this.config.pfs !== undefined) throw new Error("config.pfs isn't auto (undefined)");
-    return this.pfsList$
-      .pipe(
-        first(),
-        mergeMap(pfsList => pfsListInfo(pfsList, this.deps)),
-      )
+    assert(this.config.pfs !== null, 'PFS disabled in config');
+    return (this.config.pfs
+      ? of<readonly (string | Address)[]>([this.config.pfs])
+      : this.deps.latest$.pipe(
+          pluckDistinct('pfsList'),
+          first(v => v.length > 0),
+        )
+    )
+      .pipe(mergeMap(pfsList => pfsListInfo(pfsList, this.deps)))
       .toPromise();
   }
 
@@ -980,19 +895,28 @@ export class Raiden {
    *
    * @param token - Address of the token to be minted
    * @param amount - Amount to be minted
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Notice the beneficiary here is always the account that sends the transaction, as this is
+   *    expectedly also the account that will pay for e.g. future deposits.
+   *    Set this to true if one wants to force sending the transaction with the subkey
    * @returns transaction
    */
-  public async mint(token: string, amount: BigNumberish): Promise<Hash> {
+  public async mint(
+    token: string,
+    amount: BigNumberish,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
     // Check whether address is valid
-    if (!Address.is(token)) throw new Error('Invalid address.');
+    assert(Address.is(token), 'Invalid address');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
 
     // Check whether we are on a test network
-    if (this.deps.network.name === 'homestead') {
-      throw new Error('Minting is only allowed on test networks.');
-    }
+    assert(this.deps.network.name !== 'homestead', 'Minting is only allowed on test networks.');
 
+    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
     // Mint token
-    const customTokenContract = CustomTokenFactory.connect(token, this.deps.signer);
+    const customTokenContract = CustomTokenFactory.connect(token, signer);
     const tx = await customTokenContract.functions.mint(decode(UInt(32), amount));
     const receipt = await tx.wait();
     if (!receipt.status) throw new Error('Failed to mint token.');
@@ -1006,17 +930,17 @@ export class Raiden {
    * @returns Promise to UDC remaining capacity
    */
   public async getUDCCapacity(): Promise<BigNumber> {
-    const balance = await this.deps.userDepositContract.functions.balances(this.deps.address),
-      blockNumber = this.state.blockNumber,
-      owedAmount = Object.values(this.state.path.iou)
-        .reduce((acc, value) => {
-          const nonExpiredIOUs = Object.values(value).filter(value =>
-            value.expiration_block.gte(blockNumber),
-          );
-          acc.push(...nonExpiredIOUs);
-          return acc;
-        }, new Array<IOU>())
-        .reduce((acc, iou) => acc.add(iou.amount), Zero);
+    const balance = await this.deps.userDepositContract.functions.balances(this.deps.address);
+    const blockNumber = this.state.blockNumber;
+    const owedAmount = Object.values(this.state.path.iou)
+      .reduce((acc, value) => {
+        const nonExpiredIOUs = Object.values(value).filter(value =>
+          value.expiration_block.gte(blockNumber),
+        );
+        acc.push(...nonExpiredIOUs);
+        return acc;
+      }, new Array<IOU>())
+      .reduce((acc, iou) => acc.add(iou.amount), Zero);
     return balance.sub(owedAmount);
   }
 
@@ -1034,37 +958,113 @@ export class Raiden {
    * </ol>
    *
    * @param amount - The amount to deposit on behalf of the target/beneficiary.
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Set this to true if one wants to force sending the transaction with the subkey
    * @returns transaction hash
    */
-  public async depositToUDC(amount: BigNumberish): Promise<Hash> {
+  public async depositToUDC(
+    amount: BigNumberish,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+
     const depositAmount = bigNumberify(amount);
+    assert(depositAmount.gt(Zero), 'Please deposit a positive amount.');
 
-    if (!depositAmount.gt(Zero)) throw new Error('Please deposit a positive amount.');
+    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
 
-    const { userDepositContract, address } = this.deps;
+    const userDepositContract = getContractWithSigner(this.deps.userDepositContract, signer);
+    const serviceTokenContract = getContractWithSigner(
+      this.deps.getTokenContract(await this.userDepositTokenAddress()),
+      signer,
+    );
+    const balance = await serviceTokenContract.functions.balanceOf(this.address);
 
-    const tokenAddress = await this.userDepositTokenAddress();
-    const serviceToken = HumanStandardTokenFactory.connect(tokenAddress, this.deps.signer);
-    const balance = await serviceToken.functions.balanceOf(address);
+    assert(balance.gte(amount), `Insufficient token balance (${balance}).`);
 
-    if (balance.lt(amount)) throw new Error(`Insufficient token balance (${balance}).`);
-
-    const approveTx = await serviceToken.functions.approve(
+    const approveTx = await serviceTokenContract.functions.approve(
       userDepositContract.address,
       depositAmount,
     );
     const approveReceipt = await approveTx.wait();
     if (!approveReceipt.status) throw new Error('Approve transaction failed.');
 
-    const currentUDCBalance = await userDepositContract.functions.balances(address);
+    const currentUDCBalance = await userDepositContract.functions.balances(this.address);
     const depositTx = await userDepositContract.functions.deposit(
-      address,
+      this.address,
       currentUDCBalance.add(depositAmount),
     );
     const depositReceipt = await depositTx.wait();
     if (!depositReceipt.status) throw new Error('Deposit transaction failed.');
 
     return depositTx.hash as Hash;
+  }
+
+  /**
+   * Transfer value ETH on-chain to address.
+   * If subkey is being used, use main account by default, or subkey account if 'subkey' is true
+   * Example:
+   *   // transfer 0.1 ETH from main account to subkey account, when subkey is used
+   *   await raiden.transferOnchainBalance(raiden.address, parseEther('0.1'));
+   *   // transfer 0.1 ETH back from subkey account to main account
+   *   await raiden.transferOnchainBalance(raiden.mainAddress, parseEther('0.1'), true);
+   * TODO: expose a nice way to transfer ALL, considering gas price & limit
+   *
+   * @param to - Recipient address
+   * @param value - Amount of ETH (in Wei) to transfer. Use ethers/utils::parseEther if needed
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Set this to true if one wants to force sending the transaction with the subkey
+   * @returns transaction hash
+   */
+  public async transferOnchainBalance(
+    to: string,
+    value: BigNumberish,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
+    assert(Address.is(to), 'Invalid address');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+
+    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+
+    const tx = await signer.sendTransaction({ to, value: bigNumberify(value) });
+    const receipt = await tx.wait();
+
+    if (!receipt.status) throw new Error('Failed to transfer balance');
+    return tx.hash! as Hash;
+  }
+
+  /**
+   * Transfer value tokens on-chain to address.
+   * If subkey is being used, use main account by default, or subkey account if 'subkey' is true
+   * TODO: expose a nice way to transfer ALL tokens
+   *
+   * @param token - Token address
+   * @param to - Recipient address
+   * @param value - Amount of tokens (in Wei) to transfer. Use ethers/utils::parseUnits if needed
+   * @param options - tx options
+   * @param options.subkey - By default, if using subkey, main account is used to send transactions
+   *    Set this to true if one wants to force sending the transaction with the subkey
+   * @returns transaction hash
+   */
+  public async transferOnchainTokens(
+    token: string,
+    to: string,
+    value: BigNumberish,
+    { subkey }: { subkey?: boolean } = {},
+  ): Promise<Hash> {
+    assert(Address.is(token) && Address.is(to), 'Invalid address');
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+
+    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const tokenContract = getContractWithSigner(this.deps.getTokenContract(token), signer);
+
+    const tx = await tokenContract.functions.transfer(to, bigNumberify(value));
+    const receipt = await tx.wait();
+
+    if (!receipt.status) throw new Error('Failed to transfer tokens');
+    return tx.hash! as Hash;
   }
 }
 

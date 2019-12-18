@@ -61,6 +61,17 @@ export default class AmountInput extends Vue {
       this.$parent.$t('amount-input.error.too-many-decimals', {
         decimals: this.token!.decimals
       }),
+    (v: string) => {
+      let parsedAmount;
+      try {
+        parsedAmount = BalanceUtils.parse(v, this.token!.decimals!);
+      } catch (e) {}
+      return (
+        !this.limit ||
+        (v && parsedAmount && !parsedAmount.isZero()) ||
+        this.$parent.$t('amount-input.error.zero')
+      );
+    },
     (v: string) =>
       !this.limit ||
       (v && this.hasEnoughBalance(v, this.max)) ||
@@ -162,80 +173,80 @@ $header-vertical-margin-mobile: 2rem;
     padding-bottom: 30px;
     border: 0;
   }
-}
 
-.amount-input ::v-deep .v-input__slot {
-  border-radius: 10px;
-  background-color: $input-background !important;
-  padding: 8px 16px;
-  max-height: 49px;
-}
+  ::v-deep {
+    .v-input {
+      width: 100%;
 
-.amount-input ::v-deep .v-input {
-  width: 100%;
-}
+      &__slot {
+        border-radius: 10px;
+        background-color: $input-background !important;
+        padding: 8px 16px;
+        max-height: 49px;
+        border: 1.5px solid transparent;
 
-.amount-input ::v-deep input {
-  font-family: Roboto, sans-serif;
-  font-size: 16px;
-  line-height: 20px;
-  caret-color: white !important;
-}
+        &::before,
+        &::after {
+          border-width: 0 0 0 0;
+        }
+      }
 
-.amount-input ::v-deep input:focus {
-  outline: 0;
-}
+      &--is-focused {
+        .v-input {
+          &__slot {
+            border: 1.5px solid $primary-color;
+          }
+        }
+      }
+    }
 
-.amount-input ::v-deep .v-messages {
-  border: 1px solid transparent;
-  font-family: Roboto, sans-serif;
-  font-size: 14px;
-  line-height: 16px;
+    input {
+      font-family: Roboto, sans-serif;
+      font-size: 16px;
+      line-height: 20px;
+      caret-color: white !important;
 
-  .v-messages__wrapper {
-    height: 25px;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    padding-left: 20px;
-    justify-content: center;
-    color: white;
+      &:focus {
+        outline: 0;
+      }
+    }
+
+    .v-messages {
+      border: 1px solid transparent;
+      font-family: Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 16px;
+
+      &__wrapper {
+        height: 25px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        padding-left: 20px;
+        justify-content: center;
+        color: white;
+      }
+    }
   }
-}
 
-::v-deep .v-input__slot {
-  border: 1.5px solid transparent;
-}
+  &__token-symbol {
+    font-family: Roboto, sans-serif;
+    color: $text-color;
+    font-weight: 500;
+    font-size: 14px;
+    line-height: 27px;
+    text-align: center;
+  }
 
-::v-deep .v-input--is-focused .v-input__slot {
-  border: 1.5px solid $primary-color;
-}
-
-.amount-input__token-symbol {
-  font-family: Roboto, sans-serif;
-  color: $text-color;
-  font-weight: 500;
-  font-size: 14px;
-  line-height: 27px;
-  text-align: center;
-}
-
-::v-deep .v-text-field > .v-input__control > .v-input__slot::before {
-  border-width: 0 0 0 0;
-}
-
-::v-deep .v-text-field > .v-input__control > .v-input__slot::after {
-  border-width: 0 0 0 0;
-}
-
-.amount-input__label {
-  color: $secondary-color;
-  font-size: 13px;
-  font-weight: bold;
-  letter-spacing: 3px;
-  line-height: 15px;
-  text-transform: uppercase;
-  text-align: left;
-  width: 100%;
+  &__label {
+    color: $secondary-color;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 3px;
+    line-height: 15px;
+    text-transform: uppercase;
+    text-align: left;
+    width: 100%;
+  }
 }
 </style>

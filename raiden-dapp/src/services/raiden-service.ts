@@ -1,22 +1,10 @@
-import {
-  Raiden,
-  RaidenChannel,
-  RaidenSentTransfer,
-  RaidenPaths,
-  RaidenPFS
-} from 'raiden-ts';
+import { Raiden, RaidenSentTransfer, RaidenPaths, RaidenPFS } from 'raiden-ts';
 import { Store } from 'vuex';
 import { RootState } from '@/types';
 import { Web3Provider } from '@/services/web3-provider';
 import { BalanceUtils } from '@/utils/balance-utils';
-import {
-  DeniedReason,
-  LeaveNetworkResult,
-  Progress,
-  Token,
-  TokenModel
-} from '@/model/types';
-import { BigNumber } from 'ethers/utils';
+import { DeniedReason, Progress, Token, TokenModel } from '@/model/types';
+import { BigNumber, BigNumberish } from 'ethers/utils';
 import { Zero } from 'ethers/constants';
 import { exhaustMap, filter, first } from 'rxjs/operators';
 import asyncPool from 'tiny-async-pool';
@@ -64,7 +52,9 @@ export default class RaidenService {
 
   async ensResolve(name: string): Promise<string> {
     try {
-      return await this.raiden.resolveName(name);
+      const address = await this.raiden.resolveName(name);
+      await this.raiden.getAvailability(address);
+      return address;
     } catch (e) {
       throw new EnsResolveFailed(e);
     }
@@ -123,6 +113,13 @@ export default class RaidenService {
           if (value.type === 'tokenMonitored') {
             this.store.commit('updateTokens', {
               [value.payload.token]: { address: value.payload.token }
+            });
+          }
+
+          // Update presences on matrix presence updates
+          if (value.type === 'matrixPresenceUpdate') {
+            this.store.commit('updatePresence', {
+              [value.meta.address]: value.payload.available
             });
           }
         });
@@ -210,37 +207,6 @@ export default class RaidenService {
     if (amount.gt(Zero)) {
       await this.deposit(token, partner, amount);
     }
-  }
-
-  async leaveNetwork(
-    address: string,
-    progress?: (progress: Progress) => void
-  ): Promise<LeaveNetworkResult> {
-    const channels: RaidenChannel[] = this.store.getters.channels(address);
-    const result = {
-      closed: 0,
-      failed: 0
-    };
-
-    const total = channels.length;
-    for (let i = 0; i < total; i++) {
-      if (progress) {
-        progress({
-          current: i + 1,
-          total: total
-        });
-      }
-
-      const channel = channels[i];
-      try {
-        await this.closeChannel(channel.token, channel.partner);
-        result.closed += 1;
-      } catch (e) {
-        result.failed += 1;
-      }
-    }
-
-    return result;
   }
 
   async closeChannel(token: string, partner: string) {
@@ -334,8 +300,13 @@ export default class RaidenService {
     return raidenPFS;
   }
 
-  noPfsSelected(): boolean {
-    return this.raiden.config.pfs === undefined;
+  /* istanbul ignore next */
+  async directRoute(
+    token: string,
+    target: string,
+    value: BigNumberish
+  ): Promise<RaidenPaths | undefined> {
+    return await this.raiden.directRoute(token, target, value);
   }
 
   /* istanbul ignore next */
@@ -351,6 +322,17 @@ export default class RaidenService {
   /* istanbul ignore next */
   async getUDCCapacity(): Promise<BigNumber> {
     return this.raiden.getUDCCapacity();
+  }
+
+  async getAvailability(address: string): Promise<boolean> {
+    try {
+      const { available } = await this.raiden.getAvailability(address);
+      return available;
+    } catch (e) {
+      this.store.commit('updatePresence', { [address]: false });
+    }
+
+    return false;
   }
 }
 
@@ -371,5 +353,3 @@ export class RaidenInitializationFailed extends Error {}
 export class FindRoutesFailed extends Error {}
 
 export class PFSRequestFailed extends Error {}
-
-export class MintTokenFailed extends Error {}
