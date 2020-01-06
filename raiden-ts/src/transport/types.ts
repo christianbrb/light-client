@@ -1,6 +1,5 @@
-import { ActionType } from 'typesafe-actions';
-import { matrixPresenceUpdate } from './actions';
+import { matrixPresence } from './actions';
 
 export interface Presences {
-  [address: string]: ActionType<typeof matrixPresenceUpdate>;
+  [address: string]: matrixPresence.success;
 }

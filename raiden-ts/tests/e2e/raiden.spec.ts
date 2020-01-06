@@ -2,7 +2,6 @@
 import { first, filter } from 'rxjs/operators';
 import { Zero } from 'ethers/constants';
 import { parseEther, parseUnits, bigNumberify, BigNumber, keccak256, Network } from 'ethers/utils';
-import { getType, isActionOf } from 'typesafe-actions';
 import { get } from 'lodash';
 
 import { TestProvider } from './provider';
@@ -18,8 +17,9 @@ import { raidenShutdown } from 'raiden-ts/actions';
 import { newBlock, tokenMonitored } from 'raiden-ts/channels/actions';
 import { ChannelState } from 'raiden-ts/channels/state';
 import { Storage, Secret, Address } from 'raiden-ts/utils/types';
+import { isActionOf } from 'raiden-ts/utils/actions';
 import { ContractsInfo } from 'raiden-ts/types';
-import { RaidenConfig } from 'raiden-ts/config';
+import { PartialRaidenConfig } from 'raiden-ts/config';
 import { RaidenSentTransfer, RaidenSentTransferStatus } from 'raiden-ts/transfers/state';
 import { makeSecret, getSecrethash } from 'raiden-ts/transfers/utils';
 import { matrixSetup } from 'raiden-ts/transport/actions';
@@ -41,7 +41,7 @@ describe('Raiden', () => {
     pfsInfoResponse: any,
     pfsAddress: string,
     pfsUrl: string;
-  const config: Partial<RaidenConfig> = { settleTimeout: 20, revealTimeout: 5 };
+  const config: PartialRaidenConfig = { settleTimeout: 20, revealTimeout: 5 };
 
   let httpBackend: MockMatrixRequestFn;
   const matrixServer = 'matrix.raiden.test';
@@ -515,7 +515,7 @@ describe('Raiden', () => {
       const promise = raiden.events$.toPromise();
       raiden.stop();
       await expect(promise).resolves.toMatchObject({
-        type: getType(raidenShutdown),
+        type: raidenShutdown.type,
         payload: { reason: ShutdownReason.STOP },
       });
     });
@@ -531,7 +531,7 @@ describe('Raiden', () => {
         .toPromise();
       await provider.mine(10);
       await expect(promise).resolves.toMatchObject({
-        type: getType(newBlock),
+        type: newBlock.type,
         payload: { blockNumber: expect.any(Number) },
       });
     });
@@ -546,7 +546,7 @@ describe('Raiden', () => {
       // deploy a new token & tokenNetwork
       const { token, tokenNetwork } = await provider.deployTokenNetwork(contractsInfo);
       await expect(promise).resolves.toMatchObject({
-        type: getType(tokenMonitored),
+        type: tokenMonitored.type,
         payload: { fromBlock: expect.any(Number), token, tokenNetwork },
       });
     });

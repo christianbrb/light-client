@@ -9,27 +9,19 @@ patchVerifyMessage();
 import { BehaviorSubject, of, timer, EMPTY, Subject, Observable } from 'rxjs';
 import { first, tap, takeUntil, toArray, delay } from 'rxjs/operators';
 import { fakeSchedulers } from 'rxjs-marbles/jest';
-import { getType } from 'typesafe-actions';
 import { verifyMessage, BigNumber } from 'ethers/utils';
 
-import { RaidenAction } from 'raiden-ts/actions';
+import { RaidenAction, raidenConfigUpdate } from 'raiden-ts/actions';
 import { raidenReducer } from 'raiden-ts/reducer';
 import { RaidenState } from 'raiden-ts/state';
-import { channelMonitored } from 'raiden-ts/channels/actions';
+import { channelMonitor } from 'raiden-ts/channels/actions';
 import {
-  matrixRequestMonitorPresence,
-  matrixPresenceUpdate,
+  matrixPresence,
   matrixRoom,
   matrixSetup,
-  matrixRequestMonitorPresenceFailed,
   matrixRoomLeave,
 } from 'raiden-ts/transport/actions';
-import {
-  messageSend,
-  messageReceived,
-  messageSent,
-  messageGlobalSend,
-} from 'raiden-ts/messages/actions';
+import { messageSend, messageReceived, messageGlobalSend } from 'raiden-ts/messages/actions';
 
 import {
   initMatrixEpic,
@@ -55,6 +47,7 @@ import { encodeJsonMessage, signMessage } from 'raiden-ts/messages/utils';
 
 import { epicFixtures } from '../fixtures';
 import { raidenEpicDeps } from '../mocks';
+import { pluckDistinct } from 'raiden-ts/utils/rx';
 
 describe('transport epic', () => {
   let depsMock: ReturnType<typeof raidenEpicDeps>,
@@ -149,11 +142,11 @@ describe('transport epic', () => {
 
     test('matrix server config set without stored setup', async () => {
       const action$ = EMPTY as Observable<RaidenAction>,
-        state$ = of(state);
+        state$ = depsMock.latest$.pipe(pluckDistinct('state'));
 
       depsMock.latest$.pipe(first()).subscribe(l => {
-        const state = { ...l.state, config: { ...l.state.config, matrixServer } };
-        depsMock.latest$.next({ ...l, state, config: state.config });
+        const state = raidenReducer(l.state, raidenConfigUpdate({ config: { matrixServer } }));
+        depsMock.latest$.next({ ...l, state, config: { ...l.config, ...state.config } });
       });
 
       await expect(
@@ -176,25 +169,23 @@ describe('transport epic', () => {
 
     test('matrix server config set same as stored setup', async () => {
       const action$ = EMPTY as Observable<RaidenAction>,
-        state$ = of(
-          raidenReducer(
-            state,
-            matrixSetup({
-              server: matrixServer,
-              setup: {
-                userId,
-                accessToken,
-                deviceId,
-                displayName,
-              },
-            }),
-          ),
-        );
+        state$ = depsMock.latest$.pipe(pluckDistinct('state'));
 
       // set config
       depsMock.latest$.pipe(first()).subscribe(l => {
-        const state = { ...l.state, config: { ...l.state.config, matrixServer } };
-        depsMock.latest$.next({ ...l, state, config: state.config });
+        const state = [
+          matrixSetup({
+            server: matrixServer,
+            setup: {
+              userId,
+              accessToken,
+              deviceId,
+              displayName,
+            },
+          }),
+          raidenConfigUpdate({ config: { matrixServer } }),
+        ].reduce(raidenReducer, l.state);
+        depsMock.latest$.next({ ...l, state, config: { ...l.config, ...state.config } });
       });
 
       await expect(
@@ -288,13 +279,13 @@ describe('transport epic', () => {
   });
 
   describe('matrixMonitorChannelPresenceEpic', () => {
-    test('channelMonitored triggers matrixRequestMonitorPresence', async () => {
+    test('channelMonitor triggers matrixPresence.request', async () => {
       const action$ = of<RaidenAction>(
-        channelMonitored({ id: channelId }, { tokenNetwork, partner }),
+        channelMonitor({ id: channelId }, { tokenNetwork, partner }),
       );
       const promise = matrixMonitorChannelPresenceEpic(action$).toPromise();
       await expect(promise).resolves.toEqual(
-        matrixRequestMonitorPresence(undefined, { address: partner }),
+        matrixPresence.request(undefined, { address: partner }),
       );
     });
   });
@@ -313,9 +304,7 @@ describe('transport epic', () => {
   describe('matrixMonitorPresenceEpic', () => {
     test('fails when users does not have displayName', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
 
       matrix.searchUserDirectory.mockImplementationOnce(async () => ({
@@ -326,7 +315,7 @@ describe('transport epic', () => {
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixRequestMonitorPresenceFailed),
+        type: matrixPresence.failure.type,
         payload: expect.any(Error),
         error: true,
         meta: { address: partner },
@@ -335,9 +324,7 @@ describe('transport epic', () => {
 
     test('fails when users does not have valid addresses', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
 
       matrix.searchUserDirectory.mockImplementationOnce(async () => ({
@@ -348,7 +335,7 @@ describe('transport epic', () => {
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixRequestMonitorPresenceFailed),
+        type: matrixPresence.failure.type,
         payload: expect.any(Error),
         error: true,
         meta: { address: partner },
@@ -357,9 +344,7 @@ describe('transport epic', () => {
 
     test('fails when users does not have presence or unknown address', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
 
       (verifyMessage as jest.Mock).mockReturnValueOnce(token);
@@ -371,7 +356,7 @@ describe('transport epic', () => {
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixRequestMonitorPresenceFailed),
+        type: matrixPresence.failure.type,
         payload: expect.any(Error),
         error: true,
         meta: { address: partner },
@@ -380,9 +365,7 @@ describe('transport epic', () => {
 
     test('fails when verifyMessage throws', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
       matrix.searchUserDirectory.mockImplementationOnce(async () => ({
         limited: false,
@@ -395,7 +378,7 @@ describe('transport epic', () => {
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixRequestMonitorPresenceFailed),
+        type: matrixPresence.failure.type,
         payload: expect.any(Error),
         error: true,
         meta: { address: partner },
@@ -404,8 +387,8 @@ describe('transport epic', () => {
 
     test('success with previously monitored user', async () => {
       expect.assertions(1);
-      const presence = matrixPresenceUpdate(
-          { userId: partnerUserId, available: false },
+      const presence = matrixPresence.success(
+          { userId: partnerUserId, available: false, ts: Date.now() },
           { address: partner },
         ),
         action$ = new Subject<RaidenAction>(),
@@ -415,7 +398,7 @@ describe('transport epic', () => {
 
       action$.next(presence);
       setTimeout(() => {
-        action$.next(matrixRequestMonitorPresence(undefined, { address: partner }));
+        action$.next(matrixPresence.request(undefined, { address: partner }));
         action$.complete();
       }, 5);
 
@@ -424,14 +407,12 @@ describe('transport epic', () => {
 
     test('success with searchUserDirectory and getUserPresence', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixPresenceUpdate),
+        type: matrixPresence.success.type,
         payload: { userId: partnerUserId, available: true, ts: expect.any(Number) },
         meta: { address: partner },
       });
@@ -439,9 +420,7 @@ describe('transport epic', () => {
 
     test('success even if some getUserPresence fails', async () => {
       expect.assertions(1);
-      const action$ = of(matrixRequestMonitorPresence(undefined, { address: partner })).pipe(
-          delay(0),
-        ),
+      const action$ = of(matrixPresence.request(undefined, { address: partner })).pipe(delay(0)),
         state$ = of(state);
 
       matrix.searchUserDirectory.mockImplementationOnce(async () => ({
@@ -456,7 +435,7 @@ describe('transport epic', () => {
       await expect(
         matrixMonitorPresenceEpic(action$, state$, depsMock).toPromise(),
       ).resolves.toMatchObject({
-        type: getType(matrixPresenceUpdate),
+        type: matrixPresence.success.type,
         payload: { userId: partnerUserId, available: true, ts: expect.any(Number) },
         meta: { address: partner },
       });
@@ -467,8 +446,8 @@ describe('transport epic', () => {
     test('success presence update', async () => {
       expect.assertions(1);
       const action$ = of(
-          matrixRequestMonitorPresence(undefined, { address: partner }),
-          matrixPresenceUpdate(
+          matrixPresence.request(undefined, { address: partner }),
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -485,7 +464,7 @@ describe('transport epic', () => {
       });
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixPresenceUpdate),
+        type: matrixPresence.success.type,
         payload: { userId: partnerUserId, available: false, ts: expect.any(Number) },
         meta: { address: partner },
       });
@@ -494,8 +473,8 @@ describe('transport epic', () => {
     test('update without changing availability does not emit', async () => {
       expect.assertions(1);
       const action$ = of(
-          matrixRequestMonitorPresence(undefined, { address: partner }),
-          matrixPresenceUpdate(
+          matrixPresence.request(undefined, { address: partner }),
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -519,8 +498,8 @@ describe('transport epic', () => {
     test('cached displayName but invalid signature', async () => {
       expect.assertions(1);
       const action$ = of(
-          matrixRequestMonitorPresence(undefined, { address: partner }),
-          matrixPresenceUpdate(
+          matrixPresence.request(undefined, { address: partner }),
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -549,8 +528,8 @@ describe('transport epic', () => {
     test('getProfileInfo error', async () => {
       expect.assertions(1);
       const action$ = of(
-          matrixRequestMonitorPresence(undefined, { address: partner }),
-          matrixPresenceUpdate(
+          matrixPresence.request(undefined, { address: partner }),
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -576,12 +555,12 @@ describe('transport epic', () => {
     test('success: concurrent messages create single room', async () => {
       expect.assertions(2);
       const action$ = of(
-          messageSend({ message: 'message1' }, { address: partner }),
-          messageSend({ message: 'message2' }, { address: partner }),
-          messageSend({ message: 'message3' }, { address: partner }),
-          messageSend({ message: 'message4' }, { address: partner }),
-          messageSend({ message: 'message5' }, { address: partner }),
-          matrixPresenceUpdate(
+          messageSend.request({ message: 'message1' }, { address: partner, msgId: 'message1' }),
+          messageSend.request({ message: 'message2' }, { address: partner, msgId: 'message2' }),
+          messageSend.request({ message: 'message3' }, { address: partner, msgId: 'message3' }),
+          messageSend.request({ message: 'message4' }, { address: partner, msgId: 'message4' }),
+          messageSend.request({ message: 'message5' }, { address: partner, msgId: 'message5' }),
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -597,7 +576,7 @@ describe('transport epic', () => {
         .toPromise();
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixRoom),
+        type: matrixRoom.type,
         payload: { roomId: expect.stringMatching(new RegExp(`^!.*:${matrixServer}$`)) },
         meta: { address: partner },
       });
@@ -610,7 +589,7 @@ describe('transport epic', () => {
     test('do not invite if there is no room for user', async () => {
       expect.assertions(2);
       const action$ = of(
-          matrixPresenceUpdate(
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -626,7 +605,7 @@ describe('transport epic', () => {
     test('invite if there is room for user', () => {
       expect.assertions(2);
       const action$ = of(
-          matrixPresenceUpdate(
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -668,7 +647,7 @@ describe('transport epic', () => {
     test('accept & join from previous presence', async () => {
       expect.assertions(3);
       const action$ = of(
-          matrixPresenceUpdate(
+          matrixPresence.success(
             { userId: partnerUserId, available: true, ts: 123 },
             { address: partner },
           ),
@@ -687,7 +666,7 @@ describe('transport epic', () => {
       );
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixRoom),
+        type: matrixRoom.type,
         payload: { roomId },
         meta: { address: partner },
       });
@@ -715,11 +694,14 @@ describe('transport epic', () => {
       );
 
       action$.next(
-        matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
+        matrixPresence.success(
+          { userId: partnerUserId, available: true, ts: Date.now() },
+          { address: partner },
+        ),
       );
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixRoom),
+        type: matrixRoom.type,
         payload: { roomId },
         meta: { address: partner },
       });
@@ -772,7 +754,7 @@ describe('transport epic', () => {
       const promise = matrixLeaveExcessRoomsEpic(action$, state$, depsMock).toPromise();
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixRoomLeave),
+        type: matrixRoomLeave.type,
         payload: { roomId },
         meta: { address: partner },
       });
@@ -886,7 +868,7 @@ describe('transport epic', () => {
       matrix.emit('Room.myMembership', { roomId }, 'leave');
 
       await expect(promise).resolves.toMatchObject({
-        type: getType(matrixRoomLeave),
+        type: matrixRoomLeave.type,
         payload: { roomId },
         meta: { address: partner },
       });
@@ -901,8 +883,14 @@ describe('transport epic', () => {
         message = processed,
         signed = await signMessage(depsMock.signer, message),
         action$ = of(
-          matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
-          messageSend({ message: signed }, { address: partner }),
+          matrixPresence.success(
+            { userId: partnerUserId, available: true, ts: Date.now() },
+            { address: partner },
+          ),
+          messageSend.request(
+            { message: signed },
+            { address: partner, msgId: signed.message_identifier.toString() },
+          ),
         ),
         state$ = of(raidenReducer(state, matrixRoom({ roomId }, { address: partner })));
 
@@ -922,7 +910,10 @@ describe('transport epic', () => {
       });
 
       expect(matrixMessageSendEpic(action$, state$, depsMock).toPromise()).resolves.toMatchObject(
-        messageSent({ message: signed }, { address: partner }),
+        messageSend.success(undefined, {
+          address: partner,
+          msgId: signed.message_identifier.toString(),
+        }),
       );
       expect(matrix.sendEvent).toHaveBeenCalledTimes(1);
       expect(matrix.sendEvent).toHaveBeenCalledWith(
@@ -939,8 +930,11 @@ describe('transport epic', () => {
       const roomId = partnerRoomId,
         message = 'test message',
         action$ = of(
-          matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
-          messageSend({ message }, { address: partner }),
+          matrixPresence.success(
+            { userId: partnerUserId, available: true, ts: Date.now() },
+            { address: partner },
+          ),
+          messageSend.request({ message }, { address: partner, msgId: message }),
         ),
         state$ = of(raidenReducer(state, matrixRoom({ roomId }, { address: partner })));
 
@@ -1019,7 +1013,10 @@ describe('transport epic', () => {
 
       // actions sees presence update for partner only later
       action$.next(
-        matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
+        matrixPresence.success(
+          { userId: partnerUserId, available: true, ts: Date.now() },
+          { address: partner },
+        ),
       );
       // state includes room for partner only later
       state$.next(
@@ -1028,7 +1025,7 @@ describe('transport epic', () => {
 
       // then it resolves
       await expect(promise).resolves.toMatchObject({
-        type: getType(messageReceived),
+        type: messageReceived.type,
         payload: {
           text: message,
           ts: expect.any(Number),
@@ -1046,7 +1043,10 @@ describe('transport epic', () => {
         signed = await signMessage(partnerSigner, processed),
         message = encodeJsonMessage(signed),
         action$ = of(
-          matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
+          matrixPresence.success(
+            { userId: partnerUserId, available: true, ts: Date.now() },
+            { address: partner },
+          ),
         );
       state$.next(
         [matrixRoom({ roomId }, { address: partner })].reduce(raidenReducer, state$.value),
@@ -1071,7 +1071,7 @@ describe('transport epic', () => {
 
       // then it resolves
       await expect(promise).resolves.toMatchObject({
-        type: getType(messageReceived),
+        type: messageReceived.type,
         payload: {
           text: message,
           message: {
@@ -1095,7 +1095,10 @@ describe('transport epic', () => {
         signed = await signMessage(depsMock.signer, processed),
         message = encodeJsonMessage(signed),
         action$ = of(
-          matrixPresenceUpdate({ userId: partnerUserId, available: true }, { address: partner }),
+          matrixPresence.success(
+            { userId: partnerUserId, available: true, ts: Date.now() },
+            { address: partner },
+          ),
         );
       state$.next(
         [matrixRoom({ roomId }, { address: partner })].reduce(raidenReducer, state$.value),
@@ -1120,7 +1123,7 @@ describe('transport epic', () => {
 
       // then it resolves
       await expect(promise).resolves.toMatchObject({
-        type: getType(messageReceived),
+        type: messageReceived.type,
         payload: {
           text: message,
           message: undefined,
@@ -1189,7 +1192,7 @@ describe('transport epic', () => {
 
     expect(output).toHaveLength(2);
     expect(output[0]).toEqual(
-      messageSend(
+      messageSend.request(
         {
           message: {
             type: MessageType.DELIVERED,
@@ -1197,7 +1200,7 @@ describe('transport epic', () => {
             signature: expect.any(String),
           },
         },
-        action.meta,
+        { address: action.meta.address, msgId: message.message_identifier.toString() },
       ),
     );
     expect(output[1].payload.message).toBe(output[0].payload.message);
@@ -1236,9 +1239,14 @@ describe('transport epic', () => {
 
     expect(matrix.sendEvent).toHaveBeenCalledTimes(0);
 
+    let discoveryRoom!: string;
+    depsMock.latest$
+      .pipe(first())
+      .subscribe(({ config }) => (discoveryRoom = config.discoveryRoom!));
+
     await expect(
       matrixMessageGlobalSendEpic(
-        of(messageGlobalSend({ message }, { roomName: state.config.discoveryRoom! })),
+        of(messageGlobalSend({ message }, { roomName: discoveryRoom })),
         state$,
         depsMock,
       ).toPromise(),

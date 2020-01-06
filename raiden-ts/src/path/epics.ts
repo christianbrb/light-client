@@ -22,7 +22,6 @@ import {
   withLatestFrom,
 } from 'rxjs/operators';
 import { fromFetch } from 'rxjs/fetch';
-import { ActionType, isActionOf } from 'typesafe-actions';
 import { Signer } from 'ethers';
 import { Event } from 'ethers/contract';
 import { BigNumber, bigNumberify, toUtf8Bytes, verifyMessage, concat } from 'ethers/utils';
@@ -37,20 +36,14 @@ import { getPresences$ } from '../transport/utils';
 import { messageGlobalSend } from '../messages/actions';
 import { MessageType, PFSCapacityUpdate } from '../messages/types';
 import { MessageTypeId, signMessage } from '../messages/utils';
-import { channelDeposited } from '../channels/actions';
+import { channelDeposit } from '../channels/actions';
 import { ChannelState } from '../channels/state';
 import { channelAmounts } from '../channels/utils';
 import { Address, decode, Int, Signature, Signed, UInt } from '../utils/types';
+import { isActionOf } from '../utils/actions';
 import { encode, losslessParse, losslessStringify } from '../utils/data';
 import { getEventsStream } from '../utils/ethers';
-import {
-  iouClear,
-  pathFind,
-  pathFindFailed,
-  pathFound,
-  iouPersist,
-  pfsListUpdated,
-} from './actions';
+import { iouClear, pathFind, iouPersist, pfsListUpdated } from './actions';
 import { channelCanRoute, pfsInfo, pfsListInfo } from './utils';
 import { IOU, LastIOUResults, PathResults, Paths, PFS } from './types';
 
@@ -179,18 +172,16 @@ const prepareNextIOU$ = (
 /**
  * Check if a transfer can be made and return a set of paths for it.
  *
- * @param action$ - Observable of pathFind actions
+ * @param action$ - Observable of pathFind.request actions
  * @param state$ - Observable of RaidenStates
  * @param deps - RaidenEpicDeps object
- * @returns Observable of pathFound|pathFindFailed actions
+ * @returns Observable of pathFind.{success|failure} actions
  */
 export const pathFindServiceEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   deps: RaidenEpicDeps,
-): Observable<ActionType<
-  typeof pathFound | typeof pathFindFailed | typeof iouPersist | typeof iouClear
->> =>
+): Observable<pathFind.success | pathFind.failure | iouPersist | iouClear> =>
   combineLatest(
     state$,
     getPresences$(action$),
@@ -203,7 +194,7 @@ export const pathFindServiceEpic = (
   ).pipe(
     publishReplay(1, undefined, cached$ => {
       return action$.pipe(
-        filter(isActionOf(pathFind)),
+        filter(isActionOf(pathFind.request)),
         concatMap(action =>
           cached$.pipe(
             first(),
@@ -377,11 +368,11 @@ export const pathFindServiceEpic = (
                     filteredPaths.push({ path, fee });
                   }
                   if (!filteredPaths.length) throw new Error(`PFS: no valid routes found`);
-                  yield pathFound({ paths: filteredPaths }, action.meta);
+                  yield pathFind.success({ paths: filteredPaths }, action.meta);
                 })(),
               ),
             ),
-            catchError(err => of(pathFindFailed(err, action.meta))),
+            catchError(err => of(pathFind.failure(err, action.meta))),
           ),
         ),
       );
@@ -391,7 +382,7 @@ export const pathFindServiceEpic = (
 /**
  * Sends a [[PFSCapacityUpdate]] to PFS global room on new deposit on our side of channels
  *
- * @param action$ - Observable of channelDeposited actions
+ * @param action$ - Observable of channelDeposit.success actions
  * @param state$ - Observable of RaidenStates
  * @returns Observable of messageGlobalSend actions
  */
@@ -399,9 +390,9 @@ export const pfsCapacityUpdateEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { address, network, signer, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof messageGlobalSend>> =>
+): Observable<messageGlobalSend> =>
   action$.pipe(
-    filter(isActionOf(channelDeposited)),
+    filter(isActionOf(channelDeposit.success)),
     filter(action => action.payload.participant === address),
     debounceTime(10e3),
     withLatestFrom(state$, config$),
@@ -458,7 +449,7 @@ export const pfsServiceRegistryMonitorEpic = (
   {}: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { serviceRegistryContract, contractsInfo, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof pfsListUpdated>> =>
+): Observable<pfsListUpdated> =>
   config$.pipe(
     // monitors config.pfs, and only monitors contract if it's undefined
     pluck('pfs'),

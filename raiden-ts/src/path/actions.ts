@@ -1,39 +1,45 @@
-import { createStandardAction } from 'typesafe-actions';
+/* eslint-disable @typescript-eslint/no-namespace */
+/* eslint-disable @typescript-eslint/class-name-casing */
+import * as t from 'io-ts';
 
+import { createAction, ActionType, createAsyncAction } from '../utils/actions';
 import { Address, UInt, Signed } from '../utils/types';
 import { Paths, PFS, IOU } from './types';
 
-type PathId = {
-  tokenNetwork: Address;
-  target: Address;
-  value: UInt<32>;
-};
+const PathId = t.type({
+  tokenNetwork: Address,
+  target: Address,
+  value: UInt(32),
+});
 
-type ServiceId = {
-  tokenNetwork: Address;
-  serviceAddress: Address;
-};
+const ServiceId = t.type({
+  tokenNetwork: Address,
+  serviceAddress: Address,
+});
 
-export const pathFind = createStandardAction('pathFind')<
-  { paths?: Paths; pfs?: PFS | null },
-  PathId
->();
+export const pathFind = createAsyncAction(
+  PathId,
+  'path/find/request',
+  'path/find/success',
+  'path/find/failure',
+  t.partial({ paths: Paths, pfs: t.union([PFS, t.null]) }),
+  t.type({ paths: Paths }),
+);
 
-export const pathFound = createStandardAction('pathFound')<{ paths: Paths }, PathId>();
+export namespace pathFind {
+  export interface request extends ActionType<typeof pathFind.request> {}
+  export interface success extends ActionType<typeof pathFind.success> {}
+  export interface failure extends ActionType<typeof pathFind.failure> {}
+}
 
-export const pathFindFailed = createStandardAction(
-  'pathFindFailed',
-).map((payload: Error, meta: PathId) => ({ payload, error: true, meta }));
+export const pfsListUpdated = createAction(
+  'pfsListUpdated',
+  t.type({ pfsList: t.readonlyArray(Address) }),
+);
+export interface pfsListUpdated extends ActionType<typeof pfsListUpdated> {}
 
-export const pfsListUpdated = createStandardAction('pfsListUpdated')<{
-  pfsList: readonly Address[];
-}>();
+export const iouPersist = createAction('iouPersist', t.type({ iou: Signed(IOU) }), ServiceId);
+export interface iouPersist extends ActionType<typeof iouPersist> {}
 
-export const iouPersist = createStandardAction('iouPersist')<
-  {
-    iou: Signed<IOU>;
-  },
-  ServiceId
->();
-
-export const iouClear = createStandardAction('iouClear')<undefined, ServiceId>();
+export const iouClear = createAction('iouClear', undefined, ServiceId);
+export interface iouClear extends ActionType<typeof iouClear> {}

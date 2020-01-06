@@ -14,7 +14,6 @@ import {
   publishReplay,
   switchMap,
 } from 'rxjs/operators';
-import { isActionOf, ActionType } from 'typesafe-actions';
 import { findKey, get, isEmpty, negate } from 'lodash';
 
 import { BigNumber, hexlify, concat } from 'ethers/utils';
@@ -29,25 +28,18 @@ import { RaidenState } from '../state';
 import {
   newBlock,
   tokenMonitored,
-  channelOpenFailed,
-  channelMonitored,
-  channelDepositFailed,
-  channelCloseFailed,
-  channelSettleFailed,
+  channelMonitor,
   channelOpen,
-  channelOpened,
   channelDeposit,
   channelClose,
   channelSettle,
   channelSettleable,
-  channelDeposited,
-  channelClosed,
-  channelSettled,
   channelWithdrawn,
 } from './actions';
 import { SignatureZero, ShutdownReason } from '../constants';
 import { chooseOnchainAccount, getContractWithSigner } from '../helpers';
 import { Address, Hash, UInt, Signature } from '../utils/types';
+import { isActionOf } from '../utils/actions';
 import { fromEthersEvent, getEventsStream, getNetwork } from '../utils/ethers';
 import { encode } from '../utils/data';
 
@@ -63,7 +55,7 @@ export const initNewBlockEpic = (
   {}: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { provider }: RaidenEpicDeps,
-): Observable<ActionType<typeof newBlock>> =>
+): Observable<newBlock> =>
   from(provider.getBlockNumber()).pipe(
     mergeMap(blockNumber => merge(of(blockNumber), fromEthersEvent<number>(provider, 'block'))),
     map(blockNumber => newBlock({ blockNumber })),
@@ -81,7 +73,7 @@ export const initMonitorRegistryEpic = (
   {}: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { registryContract, contractsInfo }: RaidenEpicDeps,
-): Observable<ActionType<typeof tokenMonitored>> =>
+): Observable<tokenMonitored> =>
   state$.pipe(
     publishReplay(1, undefined, state$ =>
       state$.pipe(
@@ -123,19 +115,19 @@ export const initMonitorRegistryEpic = (
  *
  * @param action$ - Observable of RaidenActions
  * @param state$ - Observable of RaidenStates
- * @returns Observable of channelMonitored actions
+ * @returns Observable of channelMonitor actions
  */
 export const initMonitorChannelsEpic = (
   {}: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
-): Observable<ActionType<typeof channelMonitored>> =>
+): Observable<channelMonitor> =>
   state$.pipe(
     first(),
     mergeMap(function*(state) {
       for (const [tokenNetwork, obj] of Object.entries(state.channels)) {
         for (const [partner, channel] of Object.entries(obj)) {
           if (channel.state === ChannelState.opening) continue;
-          yield channelMonitored(
+          yield channelMonitor(
             { id: channel.id },
             { tokenNetwork: tokenNetwork as Address, partner: partner as Address },
           );
@@ -156,7 +148,7 @@ export const initMonitorProviderEpic = (
   {}: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { address, network, provider }: RaidenEpicDeps,
-): Observable<ActionType<typeof raidenShutdown>> =>
+): Observable<raidenShutdown> =>
   from(provider.listAccounts()).pipe(
     // at init time, check if our address is in provider's accounts list
     // if not, it means Signer is a local Wallet or another non-provider-side account
@@ -203,13 +195,13 @@ export const initMonitorProviderEpic = (
  * @param action$ - Observable of tokenMonitored actions
  * @param state$ - Observable of RaidenStates
  * @param matrix$ - RaidenEpicDeps members
- * @returns Observable of channelOpened actions
+ * @returns Observable of channelOpen.success actions
  */
 export const tokenMonitoredEpic = (
   action$: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { address, getTokenNetworkContract }: RaidenEpicDeps,
-): Observable<ActionType<typeof channelOpened>> =>
+): Observable<channelOpen.success> =>
   action$.pipe(
     filter(isActionOf(tokenMonitored)),
     groupBy(action => action.payload.tokenNetwork),
@@ -236,7 +228,7 @@ export const tokenMonitoredEpic = (
           ).pipe(
             filter(([, p1, p2]) => p1 === address || p2 === address),
             map(([id, p1, p2, settleTimeout, event]) =>
-              channelOpened(
+              channelOpen.success(
                 {
                   id: id.toNumber(),
                   settleTimeout: settleTimeout.toNumber(),
@@ -262,24 +254,24 @@ export const tokenMonitoredEpic = (
  * monitored TokenNetwork) or by a new detected ChannelOpenedAction. On the later case,
  * also fetches events since Channel.openBlock.
  * Currently monitored events:
- * - ChannelNewDeposit, fires a channelDeposited action
- * - ChannelClosedEvent, fires a channelClosed action
- * - ChannelSettledEvent, fires a channelSettled action and completes that channel observable
+ * - ChannelNewDeposit, fires a channelDeposit.success action
+ * - ChannelClosedEvent, fires a channelClose.success action
+ * - ChannelSettledEvent, fires a channelSettle.success action and completes that channel observable
  *
- * @param action$ - Observable of channelMonitored actions
+ * @param action$ - Observable of channelMonitor actions
  * @param state$ - Observable of RaidenStates
  * @param matrix$ - RaidenEpicDeps members
- * @returns Observable of channelDeposited,channelClosed,channelSettled actions
+ * @returns Observable of channelDeposit.success,channelClose.success,channelSettle.success actions
  */
 export const channelMonitoredEpic = (
   action$: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { getTokenNetworkContract }: RaidenEpicDeps,
-): Observable<ActionType<
-  typeof channelDeposited | typeof channelWithdrawn | typeof channelClosed | typeof channelSettled
->> =>
+): Observable<
+  channelDeposit.success | channelWithdrawn | channelClose.success | channelSettle.success
+> =>
   action$.pipe(
-    filter(isActionOf(channelMonitored)),
+    filter(isActionOf(channelMonitor)),
     groupBy(action => `${action.payload.id}#${action.meta.partner}@${action.meta.tokenNetwork}`),
     mergeMap(grouped$ =>
       grouped$.pipe(
@@ -360,14 +352,14 @@ export const channelMonitoredEpic = (
           >(
             tokenNetworkContract,
             [mergedFilter],
-            // if channelMonitored triggered by ChannelOpenedAction,
-            // fetch Channel's pastEvents since channelOpened blockNumber as fromBlock$
+            // if channelMonitor triggered by channelOpen.success,
+            // fetch Channel's pastEvents since channelOpen.success blockNumber as fromBlock$
             action.payload.fromBlock ? of(action.payload.fromBlock) : undefined,
           ).pipe(
             mergeMap(function*(data) {
               if (isEvent<ChannelNewDepositEvent>(depositFilter, data)) {
                 const [id, participant, totalDeposit, event] = data;
-                yield channelDeposited(
+                yield channelDeposit.success(
                   {
                     id: id.toNumber(),
                     participant,
@@ -389,7 +381,7 @@ export const channelMonitoredEpic = (
                 );
               } else if (isEvent<ChannelClosedEvent>(closedFilter, data)) {
                 const [id, participant, , , event] = data;
-                yield channelClosed(
+                yield channelClose.success(
                   {
                     id: id.toNumber(),
                     participant,
@@ -400,7 +392,7 @@ export const channelMonitoredEpic = (
                 );
               } else if (isEvent<ChannelSettledEvent>(settledFilter, data)) {
                 const [id, , , , , event] = data;
-                yield channelSettled(
+                yield channelSettle.success(
                   {
                     id: id.toNumber(),
                     settleBlock: event.blockNumber!,
@@ -412,13 +404,11 @@ export const channelMonitoredEpic = (
             }),
             // takeWhile tends to broad input to generic Action. We need to narrow it explicitly
             takeWhile<
-              ActionType<
-                | typeof channelDeposited
-                | typeof channelWithdrawn
-                | typeof channelClosed
-                | typeof channelSettled
-              >
-            >(negate(isActionOf(channelSettled)), true),
+              | channelDeposit.success
+              | channelWithdrawn
+              | channelClose.success
+              | channelSettle.success
+            >(negate(isActionOf(channelSettle.success)), true),
           );
         }),
       ),
@@ -435,15 +425,15 @@ export const channelMonitoredEpic = (
  * @param action$ - Observable of channelOpen actions
  * @param state$ - Observable of RaidenStates
  * @param getTokenNetworkContract - RaidenEpicDeps members
- * @returns Observable of channelOpenFailed actions
+ * @returns Observable of channelOpen.failure actions
  */
 export const channelOpenEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { signer, address, main, getTokenNetworkContract, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof channelOpenFailed>> =>
+): Observable<channelOpen.failure> =>
   action$.pipe(
-    filter(isActionOf(channelOpen)),
+    filter(isActionOf(channelOpen.request)),
     withLatestFrom(state$, config$),
     mergeMap(([action, state, { settleTimeout, subkey: configSubkey }]) => {
       const { signer: onchainSigner } = chooseOnchainAccount(
@@ -462,7 +452,7 @@ export const channelOpenEpic = (
       // proceed only if channel is in 'opening' state, set by this action
       if (channelState !== ChannelState.opening)
         return of(
-          channelOpenFailed(new Error(`Invalid channel state: ${channelState}`), action.meta),
+          channelOpen.failure(new Error(`Invalid channel state: ${channelState}`), action.meta),
         );
 
       // send openChannel transaction !!!
@@ -481,9 +471,9 @@ export const channelOpenEpic = (
         // if succeeded, return a empty/completed observable
         // actual ChannelOpenedAction will be detected and handled by tokenMonitoredEpic
         // if any error happened on tx call/pipeline, mergeMap below won't be hit, and catchError
-        // will then emit the channelOpenFailed action instead
+        // will then emit the channelOpen.failure action instead
         mergeMapTo(EMPTY),
-        catchError(error => of(channelOpenFailed(error, action.meta))),
+        catchError(error => of(channelOpen.failure(error, action.meta))),
       );
     }),
   );
@@ -491,16 +481,16 @@ export const channelOpenEpic = (
 /**
  * When we see a new ChannelOpenedAction event, starts monitoring channel
  *
- * @param action$ - Observable of channelOpened actions
+ * @param action$ - Observable of channelOpen.success actions
  * @param state$ - Observable of RaidenStates
- * @returns Observable of channelMonitored actions
+ * @returns Observable of channelMonitor actions
  */
 export const channelOpenedEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
-): Observable<ActionType<typeof channelMonitored>> =>
+): Observable<channelMonitor> =>
   action$.pipe(
-    filter(isActionOf(channelOpened)),
+    filter(isActionOf(channelOpen.success)),
     withLatestFrom(state$),
     // proceed only if channel is in 'open' state and a deposit is required
     filter(([action, state]) => {
@@ -511,7 +501,7 @@ export const channelOpenedEpic = (
       return !!channel && channel.state === ChannelState.open;
     }),
     map(([action]) =>
-      channelMonitored(
+      channelMonitor(
         {
           id: action.payload.id,
           fromBlock: action.payload.openBlock, // fetch past events as well, if needed
@@ -529,18 +519,18 @@ export const channelOpenedEpic = (
  * channelMonitoredEpic. If anything detectable goes wrong, fires a ChannelDepositActionFailed
  * instead
  *
- * @param action$ - Observable of channelDeposit actions
+ * @param action$ - Observable of channelDeposit.request actions
  * @param state$ - Observable of RaidenStates
  * @param address,getTokenContract,getTokenNetworkContract - RaidenEpicDeps members
- * @returns Observable of channelDepositFailed actions
+ * @returns Observable of channelDeposit.failure actions
  */
 export const channelDepositEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { signer, address, main, getTokenContract, getTokenNetworkContract, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof channelDepositFailed>> =>
+): Observable<channelDeposit.failure> =>
   action$.pipe(
-    filter(isActionOf(channelDeposit)),
+    filter(isActionOf(channelDeposit.request)),
     withLatestFrom(state$, config$),
     mergeMap(([action, state, { subkey: configSubkey }]) => {
       const token = findKey(state.tokens, tn => tn === action.meta.tokenNetwork) as
@@ -548,7 +538,7 @@ export const channelDepositEpic = (
         | undefined;
       if (!token) {
         const error = new Error(`token for tokenNetwork "${action.meta.tokenNetwork}" not found`);
-        return of(channelDepositFailed(error, action.meta));
+        return of(channelDeposit.failure(error, action.meta));
       }
       const { signer: onchainSigner } = chooseOnchainAccount(
         { signer, address, main },
@@ -567,7 +557,7 @@ export const channelDepositEpic = (
         const error = new Error(
           `channel for "${action.meta.tokenNetwork}" and "${action.meta.partner}" not found or not in 'open' state`,
         );
-        return of(channelDepositFailed(error, action.meta));
+        return of(channelDeposit.failure(error, action.meta));
       }
       const channelId = channel.id;
 
@@ -614,9 +604,9 @@ export const channelDepositEpic = (
           // if succeeded, return a empty/completed observable
           // actual ChannelDepositedAction will be detected and handled by channelMonitoredEpic
           // if any error happened on tx call/pipeline, mergeMap below won't be hit, and catchError
-          // will then emit the channelDepositFailed action instead
+          // will then emit the channelDeposit.failure action instead
           mergeMapTo(EMPTY),
-          catchError(error => of(channelDepositFailed(error, action.meta))),
+          catchError(error => of(channelDeposit.failure(error, action.meta))),
         );
     }),
   );
@@ -631,15 +621,15 @@ export const channelDepositEpic = (
  * @param action$ - Observable of channelClose actions
  * @param state$ - Observable of RaidenStates
  * @param getTokenNetworkContract - RaidenEpicDeps members
- * @returns Observable of channelCloseFailed actions
+ * @returns Observable of channelClose.failure actions
  */
 export const channelCloseEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { signer, address, main, network, getTokenNetworkContract, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof channelCloseFailed>> =>
+): Observable<channelClose.failure> =>
   action$.pipe(
-    filter(isActionOf(channelClose)),
+    filter(isActionOf(channelClose.request)),
     withLatestFrom(state$, config$),
     mergeMap(([action, state, { subkey: configSubkey }]) => {
       const { signer: onchainSigner } = chooseOnchainAccount(
@@ -662,7 +652,7 @@ export const channelCloseEpic = (
         const error = new Error(
           `channel for "${action.meta.tokenNetwork}" and "${action.meta.partner}" not found or not in 'open' or 'closing' state`,
         );
-        return of(channelCloseFailed(error, action.meta));
+        return of(channelClose.failure(error, action.meta));
       }
       const channelId = channel.id;
 
@@ -724,9 +714,9 @@ export const channelCloseEpic = (
         // if succeeded, return a empty/completed observable
         // actual ChannelClosedAction will be detected and handled by channelMonitoredEpic
         // if any error happened on tx call/pipeline, mergeMap below won't be hit, and catchError
-        // will then emit the channelCloseFailed action instead
+        // will then emit the channelClose.failure action instead
         mergeMapTo(EMPTY),
-        catchError(error => of(channelCloseFailed(error, action.meta))),
+        catchError(error => of(channelClose.failure(error, action.meta))),
       );
     }),
   );
@@ -741,15 +731,15 @@ export const channelCloseEpic = (
  * @param action$ - Observable of channelSettle actions
  * @param state$ - Observable of RaidenStates
  * @param address,getTokenNetworkContract - RaidenEpicDeps members
- * @returns Observable of channelSettleFailed actions
+ * @returns Observable of channelSettle.failure actions
  */
 export const channelSettleEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   { signer, address, main, getTokenNetworkContract, config$ }: RaidenEpicDeps,
-): Observable<ActionType<typeof channelSettleFailed>> =>
+): Observable<channelSettle.failure> =>
   action$.pipe(
-    filter(isActionOf(channelSettle)),
+    filter(isActionOf(channelSettle.request)),
     withLatestFrom(state$, config$),
     mergeMap(([action, state, { subkey: configSubkey }]) => {
       const { signer: onchainSigner } = chooseOnchainAccount(
@@ -772,7 +762,7 @@ export const channelSettleEpic = (
         const error = new Error(
           `channel for "${action.meta.tokenNetwork}" and "${action.meta.partner}" not found or not in 'settleable' or 'settling' state`,
         );
-        return of(channelSettleFailed(error, action.meta));
+        return of(channelSettle.failure(error, action.meta));
       }
       const channelId = channel.id;
 
@@ -820,9 +810,9 @@ export const channelSettleEpic = (
         // if succeeded, return a empty/completed observable
         // actual ChannelSettledAction will be detected and handled by channelMonitoredEpic
         // if any error happened on tx call/pipeline, mergeMap below won't be hit, and catchError
-        // will then emit the channelSettleFailed action instead
+        // will then emit the channelSettle.failure action instead
         mergeMapTo(EMPTY),
-        catchError(error => of(channelSettleFailed(error, action.meta))),
+        catchError(error => of(channelSettle.failure(error, action.meta))),
       );
     }),
   );
@@ -837,7 +827,7 @@ export const channelSettleEpic = (
 export const channelSettleableEpic = (
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
-): Observable<ActionType<typeof channelSettleable>> =>
+): Observable<channelSettleable> =>
   action$.pipe(
     filter(isActionOf(newBlock)),
     withLatestFrom(state$),

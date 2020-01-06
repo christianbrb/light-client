@@ -1,6 +1,9 @@
-import { createStandardAction } from 'typesafe-actions';
+/* eslint-disable @typescript-eslint/no-namespace */
+/* eslint-disable @typescript-eslint/class-name-casing */
+import * as t from 'io-ts';
 
 import { Address, UInt, Int, Secret, Hash, Signed } from '../utils/types';
+import { createAction, ActionType, createAsyncAction } from '../utils/actions';
 import { SignedBalanceProof } from '../channels/types';
 import {
   LockedTransfer,
@@ -15,98 +18,10 @@ import {
 } from '../messages/types';
 import { Paths } from '../path/types';
 
-type TransferId = { secrethash: Hash };
-
-/** A request to initiate a transfer */
-export const transfer = createStandardAction('transfer')<
-  {
-    tokenNetwork: Address;
-    target: Address;
-    value: UInt<32>;
-    paths: Paths;
-    paymentId: UInt<8>;
-    secret?: Secret;
-  },
-  TransferId
->();
-
-/** A LockedTransfer was signed and should be sent to partner */
-export const transferSigned = createStandardAction('transferSigned')<
-  { message: Signed<LockedTransfer>; fee: Int<32> },
-  TransferId
->();
-
-/** Partner acknowledge they received and processed our LockedTransfer */
-export const transferProcessed = createStandardAction('transferProcessed')<
-  { message: Signed<Processed> },
-  TransferId
->();
-
-/** Register a secret */
-export const transferSecret = createStandardAction('transferSecret')<
-  { secret: Secret; registerBlock?: number },
-  TransferId
->();
-
-/** A valid SecretRequest received from target */
-export const transferSecretRequest = createStandardAction('transferSecretRequest')<
-  { message: Signed<SecretRequest> },
-  TransferId
->();
-
-/** A SecretReveal sent to target */
-export const transferSecretReveal = createStandardAction('transferSecretReveal')<
-  { message: Signed<SecretReveal> },
-  TransferId
->();
-
-/** Unlock request after partner also revealed they know the secret */
-export const transferUnlock = createStandardAction('transferUnlock')<undefined, TransferId>();
-
-/** Signed Unlock to be sent to partner */
-export const transferUnlocked = createStandardAction('transferUnlocked')<
-  { message: Signed<Unlock> },
-  TransferId
->();
-
-/** Partner acknowledge they received and processed our Unlock */
-export const transferUnlockProcessed = createStandardAction('transferUnlockProcessed')<
-  { message: Signed<Processed> },
-  TransferId
->();
-
-/** A request to expire a given transfer */
-export const transferExpire = createStandardAction('transferExpire')<undefined, TransferId>();
-
-/** A transfer LockExpired message/BalanceProof successfuly generated */
-export const transferExpired = createStandardAction('transferExpired')<
-  { message: Signed<LockExpired> },
-  TransferId
->();
+const TransferId = t.type({ secrethash: Hash });
 
 /**
- * A transfer expiration request failed for any reason
- * e.g. user rejected sign promopt. It should eventually get prompted again, on a future newBlock
- * action which sees this transfer should be expired but sent.lockExpired didn't get set yet.
- */
-export const transferExpireFailed = createStandardAction(
-  'transferExpireFailed',
-).map((payload: Error, meta: TransferId) => ({ payload, error: true, meta }));
-
-/** Partner acknowledge they received and processed our LockExpired */
-export const transferExpireProcessed = createStandardAction('transferExpireProcessed')<
-  { message: Signed<Processed> },
-  TransferId
->();
-
-/** A transfer was refunded */
-export const transferRefunded = createStandardAction('transferRefunded')<
-  { message: Signed<RefundTransfer> },
-  TransferId
->();
-
-/**
- * A transfer completed successfuly
+ * A transfer async action set
  *
  * A transfer is considered as having succeeded from the time the secret is revealed to the target,
  * as from there, target and mediators can claim the payment down to us. But the full off-chain
@@ -116,44 +31,164 @@ export const transferRefunded = createStandardAction('transferRefunded')<
  * It'll be emitted without a balanceProof if something forces the transfer to complete
  * (e.g.  channel closed), the secret was revealed (so target was paid) but for any reason the
  * unlock didn't happen yet.
+ *
+ * transfer.failure is emitted as soon as we know the transfer failed definitely, like when a
+ * RefundTransfer is received or the lock expires before revealing the secret. It notifies the user
+ * (e.g. pending Promises) that the transfer failed and won't be paid (eventually, locked amount
+ * will be recovered by expiring the lock).
  */
-export const transferred = createStandardAction('transferred')<
-  { balanceProof?: SignedBalanceProof },
-  TransferId
->();
+export const transfer = createAsyncAction(
+  TransferId,
+  'transfer/request',
+  'transfer/success',
+  'transfer/failure',
+  t.intersection([
+    t.type({
+      tokenNetwork: Address,
+      target: Address,
+      value: UInt(32),
+      paths: Paths,
+      paymentId: UInt(8),
+    }),
+    t.partial({
+      secret: Secret,
+    }),
+  ]),
+  t.partial({ balanceProof: SignedBalanceProof }),
+);
+
+export namespace transfer {
+  export interface request extends ActionType<typeof transfer.request> {}
+  export interface success extends ActionType<typeof transfer.success> {}
+  export interface failure extends ActionType<typeof transfer.failure> {}
+}
+
+/** A LockedTransfer was signed and should be sent to partner */
+export const transferSigned = createAction(
+  'transferSigned',
+  t.type({ message: Signed(LockedTransfer), fee: Int(32) }),
+  TransferId,
+);
+export interface transferSigned extends ActionType<typeof transferSigned> {}
+
+/** Partner acknowledge they received and processed our LockedTransfer */
+export const transferProcessed = createAction(
+  'transferProcessed',
+  t.type({ message: Signed(Processed) }),
+  TransferId,
+);
+export interface transferProcessed extends ActionType<typeof transferProcessed> {}
+
+/** Register a secret */
+export const transferSecret = createAction(
+  'transferSecret',
+  t.intersection([t.type({ secret: Secret }), t.partial({ registerBlock: t.number })]),
+  TransferId,
+);
+export interface transferSecret extends ActionType<typeof transferSecret> {}
+
+/** A valid SecretRequest received from target */
+export const transferSecretRequest = createAction(
+  'transferSecretRequest',
+  t.type({ message: Signed(SecretRequest) }),
+  TransferId,
+);
+export interface transferSecretRequest extends ActionType<typeof transferSecretRequest> {}
+
+/** A SecretReveal sent to target */
+export const transferSecretReveal = createAction(
+  'transferSecretReveal',
+  t.type({ message: Signed(SecretReveal) }),
+  TransferId,
+);
+export interface transferSecretReveal extends ActionType<typeof transferSecretReveal> {}
+
+export const transferUnlock = createAsyncAction(
+  TransferId,
+  'transfer/unlock/request',
+  'transfer/unlock/success',
+  'transfer/unlock/failure',
+  undefined,
+  t.type({ message: Signed(Unlock) }),
+);
+
+export namespace transferUnlock {
+  export interface request extends ActionType<typeof transferUnlock.request> {}
+  export interface success extends ActionType<typeof transferUnlock.success> {}
+  export interface failure extends ActionType<typeof transferUnlock.failure> {}
+}
+
+/** Partner acknowledge they received and processed our Unlock */
+export const transferUnlockProcessed = createAction(
+  'transferUnlockProcessed',
+  t.type({ message: Signed(Processed) }),
+  TransferId,
+);
+export interface transferUnlockProcessed extends ActionType<typeof transferUnlockProcessed> {}
 
 /**
- * A transfer failed and can't succeed anymore
+ * A request to expire a given transfer
  *
- * It is emitted as soon as we know the transfer failed definitely, like when a RefundTransfer is
- * received or the lock expires before revealing the secret. It notifies the user (e.g. pending
- * Promises) that the transfer failed and won't be paid (eventually, locked amount will be
- * recovered by expiring the lock).
+ * A transfer expiration request may fail for any reason
+ * e.g. user rejected sign promopt. It should eventually get prompted again, on a future newBlock
+ * action which sees this transfer should be expired but sent.lockExpired didn't get set yet.
  */
-export const transferFailed = createStandardAction(
-  'transferFailed',
-).map((payload: Error, meta: TransferId) => ({ payload, error: true, meta }));
+export const transferExpire = createAsyncAction(
+  TransferId,
+  'transfer/expire/request',
+  'transfer/expire/success',
+  'transfer/expire/failure',
+  undefined,
+  t.type({ message: Signed(LockExpired) }),
+);
+
+export namespace transferExpire {
+  export interface request extends ActionType<typeof transferExpire.request> {}
+  export interface success extends ActionType<typeof transferExpire.success> {}
+  export interface failure extends ActionType<typeof transferExpire.failure> {}
+}
+
+/** Partner acknowledge they received and processed our LockExpired */
+export const transferExpireProcessed = createAction(
+  'transferExpireProcessed',
+  t.type({ message: Signed(Processed) }),
+  TransferId,
+);
+export interface transferExpireProcessed extends ActionType<typeof transferExpireProcessed> {}
+
+/** A transfer was refunded */
+export const transferRefunded = createAction(
+  'transferRefunded',
+  t.type({ message: Signed(RefundTransfer) }),
+  TransferId,
+);
+export interface transferRefunded extends ActionType<typeof transferRefunded> {}
 
 /** A pending transfer isn't needed anymore and should be cleared from state */
-export const transferClear = createStandardAction('transferClear')<undefined, TransferId>();
+export const transferClear = createAction('transferClear', undefined, TransferId);
+export interface transferClear extends ActionType<typeof transferClear> {}
 
 // Withdraw actions
 
-type WithdrawId = {
-  tokenNetwork: Address;
-  partner: Address;
-  totalWithdraw: UInt<32>;
-  expiration: number;
-};
+const WithdrawId = t.type({
+  tokenNetwork: Address,
+  partner: Address,
+  totalWithdraw: UInt(32),
+  expiration: t.number,
+});
 
 /** A WithdrawRequest was received from partner */
-export const withdrawReceiveRequest = createStandardAction('withdrawReceiveRequest')<
-  { message: Signed<WithdrawRequest> },
-  WithdrawId
->();
+export const withdrawReceive = createAsyncAction(
+  WithdrawId,
+  'withdraw/receive/request',
+  'withdraw/receive/success',
+  'withdraw/receive/failure',
+  t.type({ message: Signed(WithdrawRequest) }),
+  t.type({ message: Signed(WithdrawConfirmation) }),
+);
 
-/** A WithdrawConfirmation was signed and must be sent to partner */
-export const withdrawSendConfirmation = createStandardAction('withdrawSendConfirmation')<
-  { message: Signed<WithdrawConfirmation> },
-  WithdrawId
->();
+export namespace withdrawReceive {
+  export interface request extends ActionType<typeof withdrawReceive.request> {}
+  export interface success extends ActionType<typeof withdrawReceive.success> {}
+  export interface failure extends ActionType<typeof withdrawReceive.failure> {}
+}

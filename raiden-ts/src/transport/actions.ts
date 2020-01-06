@@ -1,46 +1,46 @@
-import { createStandardAction } from 'typesafe-actions';
+/* eslint-disable @typescript-eslint/no-namespace */
+/* eslint-disable @typescript-eslint/class-name-casing */
+import * as t from 'io-ts';
 
+import { createAction, ActionType, createAsyncAction } from '../utils/actions';
 import { Address } from '../utils/types';
 import { RaidenMatrixSetup } from './state';
 
+const NodeId = t.type({ address: Address });
+
 /* MatrixClient instance is ready and logged in to payload.server with credentials payload.setup */
-export const matrixSetup = createStandardAction('matrixSetup')<{
-  server: string;
-  setup: RaidenMatrixSetup;
-}>();
+export const matrixSetup = createAction(
+  'matrixSetup',
+  t.type({
+    server: t.string,
+    setup: RaidenMatrixSetup,
+  }),
+);
+export interface matrixSetup extends ActionType<typeof matrixSetup> {}
 
-/* Request matrix to start monitoring presence updates for meta.address */
-export const matrixRequestMonitorPresence = createStandardAction('matrixRequestMonitorPresence')<
+export const matrixPresence = createAsyncAction(
+  NodeId,
+  'matrix/presence/request',
+  'matrix/presence/success',
+  'matrix/presence/failure',
   undefined,
-  { address: Address }
->();
-
-/**
- * Monitored user meta.address presence updated.
- * First event for this address also works as 'success' for matrixRequestMonitorPresence
- */
-export const matrixPresenceUpdate = createStandardAction(
-  'matrixPresenceUpdate',
-).map(
-  (
-    { userId, available, ts }: { userId: string; available: boolean; ts?: number },
-    meta: { address: Address },
-  ) => ({ payload: { userId, available, ts: ts || Date.now() }, meta }),
+  t.type({ userId: t.string, available: t.boolean, ts: t.number }),
 );
 
-/* A matrixRequestMonitorPresence request action (with meta.address) failed with payload=Error */
-export const matrixRequestMonitorPresenceFailed = createStandardAction(
-  'matrixRequestMonitorPresenceFailed',
-).map((payload: Error, meta: { address: Address }) => ({ payload, error: true, meta }));
+export namespace matrixPresence {
+  export interface request extends ActionType<typeof matrixPresence.request> {}
+  export interface success extends ActionType<typeof matrixPresence.success> {}
+  export interface failure extends ActionType<typeof matrixPresence.failure> {}
+}
 
 /* payload.roomId must go front on meta.address's room queue */
-export const matrixRoom = createStandardAction('matrixRoom')<
-  { roomId: string },
-  { address: Address }
->();
+export const matrixRoom = createAction('matrixRoom', t.type({ roomId: t.string }), NodeId);
+export interface matrixRoom extends ActionType<typeof matrixRoom> {}
 
 /* payload.roomId must be excluded from meta.address room queue, if present */
-export const matrixRoomLeave = createStandardAction('matrixRoomLeave')<
-  { roomId: string },
-  { address: Address }
->();
+export const matrixRoomLeave = createAction(
+  'matrixRoomLeave',
+  t.type({ roomId: t.string }),
+  NodeId,
+);
+export interface matrixRoomLeave extends ActionType<typeof matrixRoomLeave> {}

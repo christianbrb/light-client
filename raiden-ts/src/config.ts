@@ -26,6 +26,14 @@ import { getNetworkName } from './utils/ethers';
  * - subkey - When using subkey, this sets the behavior when { subkey } option isn't explicitly set
  *            in on-chain method calls. false (default) = use main key; true = use subkey
  */
+const logLevels = t.keyof({
+  ['']: null,
+  trace: null,
+  debug: null,
+  info: null,
+  warn: null,
+  error: null,
+});
 export const RaidenConfig = t.readonly(
   t.intersection([
     t.type({
@@ -40,14 +48,15 @@ export const RaidenConfig = t.readonly(
     }),
     t.partial({
       matrixServer: t.string,
-      logger: t.keyof({
-        ['']: null,
-        trace: null,
-        debug: null,
-        info: null,
-        warn: null,
-        error: null,
-      }),
+      logger: t.union([
+        logLevels,
+        t.partial({
+          prevState: logLevels,
+          action: logLevels,
+          error: logLevels,
+          nextState: logLevels,
+        }),
+      ]),
       pfs: t.union([Address, t.string, t.null]),
       subkey: t.boolean,
     }),
@@ -55,18 +64,19 @@ export const RaidenConfig = t.readonly(
 );
 export interface RaidenConfig extends t.TypeOf<typeof RaidenConfig> {}
 
+export const PartialRaidenConfig = t.readonly(
+  t.intersection([t.partial(RaidenConfig.type.types['0'].props), RaidenConfig.type.types['1']]),
+);
+export interface PartialRaidenConfig extends t.TypeOf<typeof PartialRaidenConfig> {}
+
 /**
- * Create a RaidenConfig from some common options and an optional overwrites partial
+ * Create a RaidenConfig from some common options
  *
  * @param obj - Object containing common parameters for config
  * @param obj.network - ether's Network object for the current blockchain
- * @param overwrites - A partial object to overwrite top-level properties of the returned config
  * @returns A full config object
  */
-export function makeDefaultConfig(
-  { network }: { network: Network },
-  overwrites: Partial<RaidenConfig> = {},
-): RaidenConfig {
+export function makeDefaultConfig({ network }: { network: Network }): RaidenConfig {
   return {
     matrixServerLookup:
       'https://raw.githubusercontent.com/raiden-network/raiden-transport/master/known_servers.test.yaml',
@@ -77,6 +87,5 @@ export function makeDefaultConfig(
     pfsRoom: `raiden_${getNetworkName(network)}_path_finding`,
     matrixExcessRooms: 3,
     pfsSafetyMargin: 1.0,
-    ...overwrites,
   };
 }

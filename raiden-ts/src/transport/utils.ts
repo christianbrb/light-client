@@ -1,6 +1,5 @@
 import { Observable, of, fromEvent } from 'rxjs';
 import { filter, scan, startWith, share, take } from 'rxjs/operators';
-import { isActionOf } from 'typesafe-actions';
 import { memoize, curry } from 'lodash';
 import { MatrixClient, Room } from 'matrix-js-sdk';
 
@@ -8,7 +7,7 @@ import { RaidenAction } from '../actions';
 import { RaidenConfig } from '../config';
 import { isntNil } from '../utils/types';
 import { Presences } from './types';
-import { matrixPresenceUpdate } from './actions';
+import { matrixPresence } from './actions';
 
 /**
  * Helper to map/get an aggregated Presences observable from action$ bus
@@ -21,7 +20,7 @@ import { matrixPresenceUpdate } from './actions';
 export const getPresences$ = memoize(
   (action$: Observable<RaidenAction>): Observable<Presences> =>
     action$.pipe(
-      filter(isActionOf(matrixPresenceUpdate)),
+      filter(matrixPresence.success.is),
       scan(
         // scan all presence update actions and populate/output a per-address mapping
         (presences, update) => ({

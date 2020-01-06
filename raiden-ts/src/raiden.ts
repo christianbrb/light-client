@@ -7,7 +7,6 @@ import { Zero } from 'ethers/constants';
 import { MatrixClient } from 'matrix-js-sdk';
 import { applyMiddleware, createStore, Store } from 'redux';
 import { createEpicMiddleware, EpicMiddleware } from 'redux-observable';
-import { isActionOf } from 'typesafe-actions';
 import { createLogger } from 'redux-logger';
 
 import { constant, memoize, isEmpty } from 'lodash';
@@ -24,7 +23,7 @@ import { UserDepositFactory } from './contracts/UserDepositFactory';
 import { ContractsInfo, RaidenEpicDeps } from './types';
 import { ShutdownReason } from './constants';
 import { RaidenState, getState } from './state';
-import { RaidenConfig } from './config';
+import { RaidenConfig, makeDefaultConfig, PartialRaidenConfig } from './config';
 import { RaidenChannels } from './channels/state';
 import { RaidenSentTransfer } from './transfers/state';
 import { raidenReducer } from './reducer';
@@ -36,31 +35,15 @@ import {
   raidenShutdown,
   raidenConfigUpdate,
 } from './actions';
-import {
-  channelOpened,
-  channelOpenFailed,
-  channelOpen,
-  channelDeposited,
-  channelDepositFailed,
-  channelDeposit,
-  channelClosed,
-  channelCloseFailed,
-  channelClose,
-  channelSettled,
-  channelSettleFailed,
-  channelSettle,
-} from './channels/actions';
-import {
-  matrixPresenceUpdate,
-  matrixRequestMonitorPresenceFailed,
-  matrixRequestMonitorPresence,
-} from './transport/actions';
-import { transfer, transferFailed, transferSigned } from './transfers/actions';
+import { channelOpen, channelDeposit, channelClose, channelSettle } from './channels/actions';
+import { matrixPresence } from './transport/actions';
+import { transfer, transferSigned } from './transfers/actions';
 import { makeSecret, getSecrethash, makePaymentId } from './transfers/utils';
-import { pathFind, pathFound, pathFindFailed } from './path/actions';
+import { pathFind } from './path/actions';
 import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './path/types';
 import { pfsListInfo } from './path/utils';
 import { Address, Secret, Storage, Hash, UInt, decode, assert } from './utils/types';
+import { isActionOf, asyncActionToPromise, isResponseOf } from './utils/actions';
 import { patchSignSend } from './utils/ethers';
 import { pluckDistinct } from './utils/rx';
 import {
@@ -142,6 +125,10 @@ export class Raiden {
     RaidenEpicDeps
   > | null;
 
+  private readonly defaultConfig: RaidenConfig;
+  // for a given partial config, "memoize-one" full config (merge of default & partial configs)
+  private lastConfig?: [PartialRaidenConfig, RaidenConfig];
+
   public constructor(
     provider: JsonRpcProvider,
     network: Network,
@@ -164,7 +151,8 @@ export class Raiden {
     this.action$ = latest$.pipe(pluckDistinct('action'), skip(1));
     this.channels$ = this.state$.pipe(map(state => mapTokenToPartner(state)));
     this.transfers$ = initTransfers$(this.state$);
-    this.events$ = this.action$.pipe(filter(isActionOf(Object.values(RaidenEvents))));
+    this.events$ = this.action$.pipe(filter(isActionOf(RaidenEvents)));
+    this.defaultConfig = makeDefaultConfig({ network });
 
     this.getTokenInfo = memoize(async function(this: Raiden, token: string) {
       assert(Address.is(token), 'Invalid address');
@@ -218,7 +206,24 @@ export class Raiden {
       predicate: () =>
         this.config.logger !== '' &&
         (this.config.logger !== undefined || process.env.NODE_ENV === 'development'),
-      level: () => this.config.logger || 'debug',
+      level: {
+        prevState: () =>
+          typeof this.config.logger === 'object'
+            ? this.config.logger['prevState'] ?? ''
+            : this.config.logger ?? 'debug',
+        action: () =>
+          typeof this.config.logger === 'object'
+            ? this.config.logger['action'] ?? ''
+            : this.config.logger ?? 'debug',
+        error: () =>
+          typeof this.config.logger === 'object'
+            ? this.config.logger['error'] ?? ''
+            : this.config.logger ?? 'debug',
+        nextState: () =>
+          typeof this.config.logger === 'object'
+            ? this.config.logger['nextState'] ?? ''
+            : this.config.logger ?? 'debug',
+      },
     });
 
     // minimum blockNumber of contracts deployment as start scan block
@@ -231,7 +236,7 @@ export class Raiden {
 
     this.store = createStore(
       raidenReducer,
-      // workaround for redux@4.0.4's error on DeepPartial<RaidenState>
+      // workaround for redux's PreloadedState issues with branded values
       state as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       applyMiddleware(loggerMiddleware, this.epicMiddleware),
     );
@@ -270,7 +275,7 @@ export class Raiden {
     account: Signer | string | number,
     storageOrState?: Storage | RaidenState | unknown,
     contracts?: ContractsInfo,
-    config?: Partial<RaidenConfig>,
+    config?: PartialRaidenConfig,
     subkey?: true,
   ): Promise<Raiden> {
     let provider: JsonRpcProvider;
@@ -398,7 +403,11 @@ export class Raiden {
    * @returns Current Raiden config
    */
   public get config(): RaidenConfig {
-    return this.state.config;
+    // "memoize one" last merge of default and partial configs
+    const currentPartial = this.state.config;
+    if (this.lastConfig?.['0'] !== currentPartial)
+      this.lastConfig = [currentPartial, { ...this.defaultConfig, ...currentPartial }];
+    return this.lastConfig['1'];
   }
 
   /**
@@ -406,7 +415,7 @@ export class Raiden {
    *
    * @param config - Partial object containing keys and values to update in config
    */
-  public updateConfig(config: Partial<RaidenConfig>) {
+  public updateConfig(config: PartialRaidenConfig) {
     this.store.dispatch(raidenConfigUpdate({ config }));
   }
 
@@ -475,22 +484,11 @@ export class Raiden {
     assert(tokenNetwork, 'Unknown token network');
     assert(!options.subkey || this.deps.main, "Can't send tx from subkey if not set");
 
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([channelOpened, channelOpenFailed])),
-        filter(
-          action => action.meta.tokenNetwork === tokenNetwork && action.meta.partner === partner,
-        ),
-        first(),
-        map(action => {
-          if (isActionOf(channelOpenFailed, action)) throw action.payload;
-          return action.payload.txHash;
-        }),
-      )
-      .toPromise();
-
-    this.store.dispatch(channelOpen(options, { tokenNetwork, partner }));
-
+    const meta = { tokenNetwork, partner };
+    const promise = asyncActionToPromise(channelOpen, meta, this.action$).then(
+      ({ txHash }) => txHash, // pluck txHash
+    );
+    this.store.dispatch(channelOpen.request(options, meta));
     return promise;
   }
 
@@ -520,21 +518,11 @@ export class Raiden {
     assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
 
     const deposit = decode(UInt(32), amount);
-
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([channelDeposited, channelDepositFailed])),
-        filter(
-          action => action.meta.tokenNetwork === tokenNetwork && action.meta.partner === partner,
-        ),
-        first(),
-        map(action => {
-          if (isActionOf(channelDepositFailed, action)) throw action.payload;
-          return action.payload.txHash;
-        }),
-      )
-      .toPromise();
-    this.store.dispatch(channelDeposit({ deposit, subkey }, { tokenNetwork, partner }));
+    const meta = { tokenNetwork, partner };
+    const promise = asyncActionToPromise(channelDeposit, meta, this.action$).then(
+      ({ txHash }) => txHash,
+    );
+    this.store.dispatch(channelDeposit.request({ deposit, subkey }, meta));
     return promise;
   }
 
@@ -565,20 +553,11 @@ export class Raiden {
     assert(tokenNetwork, 'Unknown token network');
     assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
 
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([channelClosed, channelCloseFailed])),
-        filter(
-          action => action.meta.tokenNetwork === tokenNetwork && action.meta.partner === partner,
-        ),
-        first(),
-        map(action => {
-          if (isActionOf(channelCloseFailed, action)) throw action.payload;
-          return action.payload.txHash;
-        }),
-      )
-      .toPromise();
-    this.store.dispatch(channelClose(subkey ? { subkey } : undefined, { tokenNetwork, partner }));
+    const meta = { tokenNetwork, partner };
+    const promise = asyncActionToPromise(channelClose, meta, this.action$).then(
+      ({ txHash }) => txHash,
+    );
+    this.store.dispatch(channelClose.request(subkey ? { subkey } : undefined, meta));
     return promise;
   }
 
@@ -609,20 +588,11 @@ export class Raiden {
     assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
 
     // wait for the corresponding success or error action
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([channelSettled, channelSettleFailed])),
-        filter(
-          action => action.meta.tokenNetwork === tokenNetwork && action.meta.partner === partner,
-        ),
-        first(),
-        map(action => {
-          if (isActionOf(channelSettleFailed, action)) throw action.payload;
-          return action.payload.txHash;
-        }),
-      )
-      .toPromise();
-    this.store.dispatch(channelSettle(subkey ? { subkey } : undefined, { tokenNetwork, partner }));
+    const meta = { tokenNetwork, partner };
+    const promise = asyncActionToPromise(channelSettle, meta, this.action$).then(
+      ({ txHash }) => txHash,
+    );
+    this.store.dispatch(channelSettle.request(subkey ? { subkey } : undefined, meta));
     return promise;
   }
 
@@ -638,18 +608,9 @@ export class Raiden {
     address: string,
   ): Promise<{ userId: string; available: boolean; ts: number }> {
     assert(Address.is(address), 'Invalid address');
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([matrixPresenceUpdate, matrixRequestMonitorPresenceFailed])),
-        filter(action => action.meta.address === address),
-        first(),
-        map(action => {
-          if (isActionOf(matrixRequestMonitorPresenceFailed, action)) throw action.payload;
-          return action.payload;
-        }),
-      )
-      .toPromise();
-    this.store.dispatch(matrixRequestMonitorPresence(undefined, { address }));
+    const meta = { address };
+    const promise = asyncActionToPromise(matrixPresence, meta, this.action$);
+    this.store.dispatch(matrixPresence.request(undefined, meta));
     return promise;
   }
 
@@ -716,27 +677,20 @@ export class Raiden {
       'Provided secrethash must match the sha256 hash of provided secret',
     );
 
+    const pathFindMeta = { tokenNetwork, target, value: decodedValue };
     return merge(
       // wait for pathFind response
       this.action$.pipe(
-        filter(isActionOf([pathFound, pathFindFailed])),
-        first(
-          action =>
-            action.meta.tokenNetwork === tokenNetwork &&
-            action.meta.target === target &&
-            action.meta.value.eq(value),
-        ),
+        first(isResponseOf(pathFind, pathFindMeta)),
         map(action => {
-          if (isActionOf(pathFindFailed, action)) throw action.payload;
+          if (pathFind.failure.is(action)) throw action.payload;
           return action.payload.paths;
         }),
       ),
       // request pathFind; even if paths were provided, send it again for validation
       // this is done at 'merge' subscription time (i.e. when above action filter is subscribed)
       defer(() => {
-        this.store.dispatch(
-          pathFind({ paths, pfs }, { tokenNetwork, target, value: decodedValue }),
-        );
+        this.store.dispatch(pathFind.request({ paths, pfs }, pathFindMeta));
         return EMPTY;
       }),
     )
@@ -745,17 +699,17 @@ export class Raiden {
           merge(
             // wait for transfer response
             this.action$.pipe(
-              filter(isActionOf([transferSigned, transferFailed])),
+              filter(isActionOf([transferSigned, transfer.failure])),
               first(action => action.meta.secrethash === secrethash),
               map(action => {
-                if (isActionOf(transferFailed, action)) throw action.payload;
+                if (transfer.failure.is(action)) throw action.payload;
                 return secrethash;
               }),
             ),
             // request transfer with returned/validated paths at 'merge' subscription time
             defer(() => {
               this.store.dispatch(
-                transfer(
+                transfer.request(
                   {
                     tokenNetwork,
                     target,
@@ -801,23 +755,11 @@ export class Raiden {
 
     const decodedValue = decode(UInt(32), value);
     const pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
-
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([pathFound, pathFindFailed])),
-        first(
-          action =>
-            action.meta.tokenNetwork === tokenNetwork &&
-            action.meta.target === target &&
-            action.meta.value.eq(decodedValue),
-        ),
-        map(action => {
-          if (isActionOf(pathFindFailed, action)) throw action.payload;
-          return action.payload.paths;
-        }),
-      )
-      .toPromise();
-    this.store.dispatch(pathFind({ pfs }, { tokenNetwork, target, value: decodedValue }));
+    const meta = { tokenNetwork, target, value: decodedValue };
+    const promise = asyncActionToPromise(pathFind, meta, this.action$).then(
+      ({ paths }) => paths, // pluck paths
+    );
+    this.store.dispatch(pathFind.request({ pfs }, meta));
     return promise;
   }
 
@@ -841,23 +783,13 @@ export class Raiden {
 
     const decodedValue = decode(UInt(32), value);
 
-    const promise = this.action$
-      .pipe(
-        filter(isActionOf([pathFound, pathFindFailed])),
-        first(
-          action =>
-            action.meta.tokenNetwork === tokenNetwork &&
-            action.meta.target === target &&
-            action.meta.value.eq(decodedValue),
-        ),
-        map(action => {
-          if (isActionOf(pathFindFailed, action)) return undefined;
-          return action.payload.paths;
-        }),
-      )
-      .toPromise();
+    const meta = { tokenNetwork, target, value: decodedValue };
+    const promise = asyncActionToPromise(pathFind, meta, this.action$).then(
+      ({ paths }) => paths, // pluck paths
+      () => undefined, // on reject, omit and return undefined instead
+    );
     // dispatch a pathFind with pfs disabled, to force checking for a direct route
-    this.store.dispatch(pathFind({ pfs: null }, { tokenNetwork, target, value: decodedValue }));
+    this.store.dispatch(pathFind.request({ pfs: null }, meta));
     return promise;
   }
 
@@ -972,14 +904,14 @@ export class Raiden {
     const depositAmount = bigNumberify(amount);
     assert(depositAmount.gt(Zero), 'Please deposit a positive amount.');
 
-    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
 
     const userDepositContract = getContractWithSigner(this.deps.userDepositContract, signer);
     const serviceTokenContract = getContractWithSigner(
       this.deps.getTokenContract(await this.userDepositTokenAddress()),
       signer,
     );
-    const balance = await serviceTokenContract.functions.balanceOf(this.address);
+    const balance = await serviceTokenContract.functions.balanceOf(address);
 
     assert(balance.gte(amount), `Insufficient token balance (${balance}).`);
 
