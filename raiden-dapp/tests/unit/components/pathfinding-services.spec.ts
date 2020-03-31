@@ -80,8 +80,9 @@ describe('PathfindingService.vue', () => {
       .at(1)
       .trigger('click');
     await wrapper.vm.$nextTick();
-    expect(wrapper.emitted().select).toBeTruthy();
-    expect(wrapper.emitted().select[0][0]).toEqual([raidenPFS, false]);
+    const selectEvent = wrapper.emitted('select');
+    expect(selectEvent).toBeTruthy();
+    expect(selectEvent?.shift()).toContainEqual([raidenPFS, false]);
   });
 
   test('show an error message when the request for the services fails', async () => {
@@ -89,9 +90,9 @@ describe('PathfindingService.vue', () => {
     const wrapper = createWrapper();
     await wrapper.vm.$nextTick();
     await flushPromises();
-    expect(wrapper.find('.pathfinding-services__error').isVisible()).toBe(true);
-    expect(wrapper.find('.pathfinding-services__error span').text()).toMatch(
-      'there was an error'
-    );
+    expect(wrapper.vm.$data.error).toBeDefined();
+    expect(wrapper.vm.$data.error).toMatchObject({
+      message: 'there was an error'
+    });
   });
 });

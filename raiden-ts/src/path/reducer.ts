@@ -6,23 +6,23 @@
  * @param action - RaidenAction to handle
  * @returns New RaidenState['path'] slice
  */
-import { set, unset } from 'lodash/fp';
+import set from 'lodash/fp/set';
+import unset from 'lodash/fp/unset';
 
-import { RaidenAction } from '../actions';
-import { initialState, RaidenState } from '../state';
+import { initialState } from '../state';
 import { partialCombineReducers } from '../utils/redux';
-import { isActionOf } from '../utils/actions';
+import { createReducer } from '../utils/actions';
 import { iouClear, iouPersist } from './actions';
 
-function path(state: RaidenState['path'] = initialState.path, action: RaidenAction) {
-  if (isActionOf(iouPersist, action)) {
+const path = createReducer(initialState.path)
+  .handle(iouPersist, (state, action) => {
     const path = ['iou', action.meta.tokenNetwork, action.meta.serviceAddress];
     return set(path, action.payload.iou, state);
-  } else if (isActionOf(iouClear, action)) {
+  })
+  .handle(iouClear, (state, action) => {
     const path = ['iou', action.meta.tokenNetwork, action.meta.serviceAddress];
     return unset(path, state);
-  } else return state;
-}
+  });
 
 /**
  * Nested combined reducer for path

@@ -13,7 +13,6 @@
       :placeholder="placeholder"
       autocomplete="off"
       @paste="onPaste($event)"
-      @keypress="checkIfValid($event)"
       @input="onInput($event)"
     >
       <div slot="append" class="amount-input__token-symbol">
@@ -52,9 +51,9 @@ export default class AmountInput extends Vue {
   private static numericRegex = /^\d*[.]?\d*$/;
 
   readonly rules = [
-    (v: string) => {
-      return !!v || this.$parent.$t('amount-input.error.empty');
-    },
+    (v: string) => !!v || this.$parent.$t('amount-input.error.empty'),
+    (v: string) =>
+      !Number.isNaN(Number(v)) || this.$parent.$t('amount-input.error.invalid'),
     (v: string) =>
       !this.limit ||
       (v && this.noDecimalOverflow(v)) ||
@@ -90,14 +89,14 @@ export default class AmountInput extends Vue {
 
   private hasEnoughBalance(v: string, max: BigNumber) {
     return (
-      AmountInput.numericRegex.test(v) &&
+      !Number.isNaN(Number(v)) &&
       !BalanceUtils.decimalsOverflow(v, this.token!.decimals!) &&
       BalanceUtils.parse(v, this.token!.decimals!).lte(max)
     );
   }
 
   private updateIfValid(value: string) {
-    if (value !== this.amount && AmountInput.numericRegex.test(value)) {
+    if (value !== this.amount && !Number.isNaN(Number(value))) {
       this.amount = value;
     }
   }
@@ -114,16 +113,6 @@ export default class AmountInput extends Vue {
 
   mounted() {
     this.updateIfValid(this.value);
-  }
-
-  checkIfValid(event: KeyboardEvent) {
-    if (
-      !/[\d.]/.test(event.key) ||
-      (!this.value && event.key === '.') ||
-      (this.value.indexOf('.') > -1 && event.key === '.')
-    ) {
-      event.preventDefault();
-    }
   }
 
   onPaste(event: ClipboardEvent) {
@@ -155,8 +144,9 @@ export default class AmountInput extends Vue {
 </script>
 
 <style scoped lang="scss">
-@import '../main';
+@import '../scss/mixins';
 @import '../scss/colors';
+@import '../scss/fonts';
 
 $header-vertical-margin: 5rem;
 $header-vertical-margin-mobile: 2rem;
@@ -201,7 +191,7 @@ $header-vertical-margin-mobile: 2rem;
     }
 
     input {
-      font-family: Roboto, sans-serif;
+      font-family: $main-font;
       font-size: 16px;
       line-height: 20px;
       caret-color: white !important;
@@ -213,7 +203,7 @@ $header-vertical-margin-mobile: 2rem;
 
     .v-messages {
       border: 1px solid transparent;
-      font-family: Roboto, sans-serif;
+      font-family: $main-font;
       font-size: 14px;
       line-height: 16px;
 
@@ -225,12 +215,20 @@ $header-vertical-margin-mobile: 2rem;
         padding-left: 20px;
         justify-content: center;
         color: white;
+
+        @include respond-to(handhelds) {
+          padding-left: 10px;
+        }
+      }
+
+      &__message {
+        line-height: 1.1;
       }
     }
   }
 
   &__token-symbol {
-    font-family: Roboto, sans-serif;
+    font-family: $main-font;
     color: $text-color;
     font-weight: 500;
     font-size: 14px;

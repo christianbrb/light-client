@@ -1,5 +1,7 @@
-import { createLocalVue, mount, shallowMount, Wrapper } from '@vue/test-utils';
-import { addElemWithDataAppToBody } from '../utils/dialog';
+jest.useFakeTimers();
+
+import Filters from '@/filters';
+import { mount, shallowMount, Wrapper } from '@vue/test-utils';
 import Vuex from 'vuex';
 import Vuetify from 'vuetify';
 import { TestData } from '../data/mock-data';
@@ -14,10 +16,10 @@ import { $identicon } from '../utils/mocks';
 import flushPromises from 'flush-promises';
 
 Vue.use(Vuetify);
+Vue.use(Vuex);
+Vue.filter('truncate', Filters.truncate);
 
 describe('SelectHub.vue', () => {
-  addElemWithDataAppToBody();
-
   let wrapper: Wrapper<SelectHub>;
   let router: Mocked<VueRouter>;
   let vuetify: typeof Vuetify;
@@ -28,12 +30,11 @@ describe('SelectHub.vue', () => {
     });
 
   function createWrapper(route: Route, token: any, shallow: boolean = false) {
-    const localVue = createLocalVue();
-    localVue.use(Vuex);
+    vuetify = new Vuetify();
     const options = {
       vuetify,
-      localVue,
       store,
+      stubs: ['v-dialog'],
       mocks: {
         $route: route,
         $router: router,
@@ -60,6 +61,10 @@ describe('SelectHub.vue', () => {
     });
   });
 
+  beforeAll(() => {
+    process.env = { VUE_APP_HUB: 'hub.raiden.network' };
+  });
+
   test('navigate to "OpenChannel when the user selects a hub', async () => {
     const tokenAddress = '0xc778417E063141139Fce010982780140Aa0cD5Ab';
     const route = TestData.mockRoute({
@@ -69,9 +74,11 @@ describe('SelectHub.vue', () => {
     store.commit('updateTokens', { [tokenAddress]: token });
     wrapper = createWrapper(route, token);
     mockInput(wrapper, '0x1D36124C90f53d491b6832F1c073F43E2550E35b');
+    jest.advanceTimersByTime(1000);
     await wrapper.vm.$nextTick();
     await flushPromises();
-    wrapper.find('.action-button__button').trigger('click');
+    wrapper.find('form').trigger('submit');
+
     expect(router.push).toHaveBeenCalledTimes(1);
     expect(router.push).toHaveBeenCalledWith(
       expect.objectContaining({ name: RouteNames.OPEN_CHANNEL })
@@ -109,5 +116,22 @@ describe('SelectHub.vue', () => {
         name: RouteNames.HOME
       })
     );
+  });
+
+  test('auto suggest our hub on goerli if not connected yet', async () => {
+    const tokenAddress = '0xc778417E063141139Fce010982780140Aa0cD5Ab';
+    const route = TestData.mockRoute({
+      token: tokenAddress
+    });
+    const token = testToken(tokenAddress);
+    store.commit('updateTokens', { [tokenAddress]: token });
+    store.commit('network', { name: 'goerli' });
+    wrapper = createWrapper(route, token);
+
+    jest.advanceTimersByTime(1000);
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(wrapper.vm.$data.partner).toBe('hub.raiden.network');
   });
 });

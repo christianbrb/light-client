@@ -3,7 +3,7 @@ import * as t from 'io-ts';
 import { Observable, from, of, EMPTY } from 'rxjs';
 import { mergeMap, map, timeout, withLatestFrom, catchError, toArray } from 'rxjs/operators';
 import { fromFetch } from 'rxjs/fetch';
-import { memoize } from 'lodash';
+import memoize from 'lodash/memoize';
 
 import { RaidenState } from '../state';
 import { RaidenEpicDeps } from '../types';
@@ -13,6 +13,8 @@ import { Presences } from '../transport/types';
 import { ChannelState } from '../channels/state';
 import { channelAmounts } from '../channels/utils';
 import { ServiceRegistry } from '../contracts/ServiceRegistry';
+import { RaidenError, ErrorCodes } from '../utils/error';
+import { Capabilities } from '../constants';
 import { PFS } from './types';
 
 /**
@@ -22,6 +24,7 @@ import { PFS } from './types';
  * @param presences - latest Presences mapping
  * @param tokenNetwork - tokenNetwork where the channel is
  * @param partner - possibly a partner on given tokenNetwork
+ * @param target - transfer target
  * @param value - amount of tokens to check if channel can route
  * @returns true if channel can route, string containing reason if not
  */
@@ -30,10 +33,13 @@ export function channelCanRoute(
   presences: Presences,
   tokenNetwork: Address,
   partner: Address,
+  target: Address,
   value: UInt<32>,
 ): true | string {
   if (!(partner in presences) || !presences[partner].payload.available)
     return `path: partner "${partner}" not available in transport`;
+  if (target !== partner && presences[partner].payload.caps?.[Capabilities.NO_MEDIATE])
+    return `path: partner "${partner}" doesn't mediate transfers`;
   if (!(partner in state.channels[tokenNetwork]))
     return `path: there's no direct channel with partner "${partner}"`;
   const channel = state.channels[tokenNetwork][partner];
@@ -41,7 +47,7 @@ export function channelCanRoute(
     return `path: channel with "${partner}" in state "${channel.state}" instead of "${ChannelState.open}"`;
   const { ownCapacity: capacity } = channelAmounts(channel);
   if (capacity.lt(value))
-    return `path: channel with "${partner}" don't have enough capacity=${capacity.toString()}`;
+    return `path: channel with "${partner}" doesn't have enough capacity=${capacity.toString()}`;
   return true;
 }
 
@@ -86,8 +92,8 @@ export function pfsInfo(
   return url$.pipe(
     withLatestFrom(config$),
     mergeMap(([url, { httpTimeout }]) => {
-      if (!url) throw new Error(`Empty URL: ${url}`);
-      else if (!urlRegex.test(url)) throw new Error(`Invalid URL: ${url}`);
+      if (!url) throw new RaidenError(ErrorCodes.PFS_EMPTY_URL);
+      else if (!urlRegex.test(url)) throw new RaidenError(ErrorCodes.PFS_INVALID_URL, { url });
       // default to https for domain-only urls
       else if (!url.startsWith('https://')) url = `https://${url}`;
 
@@ -128,12 +134,13 @@ export function pfsListInfo(
   pfsList: readonly (string | Address)[],
   deps: RaidenEpicDeps,
 ): Observable<PFS[]> {
+  const { log } = deps;
   return from(pfsList).pipe(
     mergeMap(
       addrOrUrl =>
         pfsInfo(addrOrUrl, deps).pipe(
           catchError(err => {
-            console.warn(`Error trying to fetch PFS info for "${addrOrUrl}" - ignoring:`, err);
+            log.warn(`Error trying to fetch PFS info for "${addrOrUrl}" - ignoring:`, err);
             return EMPTY;
           }),
         ),
@@ -141,10 +148,7 @@ export function pfsListInfo(
     ),
     toArray(),
     map(list => {
-      if (!list.length)
-        throw new Error(
-          'Could not validate any PFS info. Possibly out-of-sync with PFSs version.',
-        );
+      if (!list.length) throw new RaidenError(ErrorCodes.PFS_INVALID_INFO);
       return list.sort((a, b) => {
         const dif = a.price.sub(b.price);
         // first, sort by price

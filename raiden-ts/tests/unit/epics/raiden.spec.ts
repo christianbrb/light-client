@@ -1,36 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,@typescript-eslint/camelcase */
 import { epicFixtures } from '../fixtures';
-import { raidenEpicDeps, makeLog, makeSignature } from '../mocks';
+import { raidenEpicDeps, makeLog } from '../mocks';
 
 import { marbles } from 'rxjs-marbles/jest';
-import {
-  of,
-  from,
-  timer,
-  BehaviorSubject,
-  Subject,
-  Observable,
-  EMPTY,
-  merge,
-  ReplaySubject,
-} from 'rxjs';
-import {
-  first,
-  takeUntil,
-  toArray,
-  delay,
-  tap,
-  ignoreElements,
-  take,
-  finalize,
-} from 'rxjs/operators';
+import { of, from, timer, Observable, EMPTY, merge, ReplaySubject } from 'rxjs';
+import { first, takeUntil, toArray, delay, tap, ignoreElements } from 'rxjs/operators';
 import { bigNumberify } from 'ethers/utils';
 import { defaultAbiCoder } from 'ethers/utils/abi-coder';
 import { range } from 'lodash';
 
-import { UInt, Address, Signed } from 'raiden-ts/utils/types';
-import { MessageType, Processed, Delivered } from 'raiden-ts/messages/types';
-import { RaidenAction, raidenShutdown } from 'raiden-ts/actions';
+import { UInt } from 'raiden-ts/utils/types';
+import {
+  RaidenAction,
+  raidenShutdown,
+  raidenConfigUpdate,
+  ConfirmableAction,
+} from 'raiden-ts/actions';
 import { RaidenState } from 'raiden-ts/state';
 import {
   newBlock,
@@ -44,17 +29,15 @@ import {
 } from 'raiden-ts/channels/actions';
 import { raidenReducer } from 'raiden-ts/reducer';
 import { raidenRootEpic } from 'raiden-ts/epics';
-import { deliveredEpic } from 'raiden-ts/transport/epics';
 import {
   initMonitorProviderEpic,
   tokenMonitoredEpic,
-  initMonitorRegistryEpic,
+  initTokensRegistryEpic,
+  confirmationEpic,
 } from 'raiden-ts/channels/epics';
 import { ShutdownReason } from 'raiden-ts/constants';
-import { makeMessageId } from 'raiden-ts/transfers/utils';
-import { encodeJsonMessage } from 'raiden-ts/messages/utils';
-import { messageSend, messageReceived } from 'raiden-ts/messages/actions';
 import { pluckDistinct } from 'raiden-ts/utils/rx';
+import { RaidenError, ErrorCodes } from 'raiden-ts/utils/error';
 
 describe('raiden epic', () => {
   let depsMock = raidenEpicDeps(),
@@ -69,8 +52,8 @@ describe('raiden epic', () => {
       txHash,
       state,
       matrixServer,
-      partnerRoomId,
-      partnerUserId,
+      state$,
+      action$,
     } = epicFixtures(depsMock);
 
   const fetch = jest.fn(async () => ({
@@ -93,8 +76,8 @@ describe('raiden epic', () => {
       txHash,
       state,
       matrixServer,
-      partnerRoomId,
-      partnerUserId,
+      state$,
+      action$,
     } = epicFixtures(depsMock));
   });
 
@@ -109,7 +92,14 @@ describe('raiden epic', () => {
         const newState = [
           tokenMonitored({ token, tokenNetwork, fromBlock: 1 }),
           channelOpen.success(
-            { id: channelId, settleTimeout, openBlock: 121, isFirstParticipant, txHash },
+            {
+              id: channelId,
+              settleTimeout,
+              isFirstParticipant,
+              txHash,
+              txBlock: 121,
+              confirmed: true,
+            },
             { tokenNetwork, partner },
           ),
           channelDeposit.success(
@@ -118,6 +108,8 @@ describe('raiden epic', () => {
               participant: depsMock.address,
               totalDeposit: bigNumberify(200) as UInt<32>,
               txHash,
+              txBlock: 122,
+              confirmed: true,
             },
             { tokenNetwork, partner },
           ),
@@ -127,12 +119,14 @@ describe('raiden epic', () => {
               participant: partner,
               totalDeposit: bigNumberify(200) as UInt<32>,
               txHash,
+              txBlock: 123,
+              confirmed: true,
             },
             { tokenNetwork, partner },
           ),
           newBlock({ blockNumber: 128 }),
           channelClose.success(
-            { id: channelId, participant: partner, closeBlock: 128, txHash },
+            { id: channelId, participant: partner, txHash, txBlock: 128, confirmed: true },
             { tokenNetwork, partner },
           ),
           newBlock({ blockNumber: 629 }),
@@ -170,18 +164,7 @@ describe('raiden epic', () => {
       }),
     );
 
-    test('monitorRegistry: fetch past and new tokenNetworks', async () => {
-      expect.assertions(2);
-      const state$ = new BehaviorSubject(state),
-        action$ = new Subject<RaidenAction>(),
-        otherToken = '0x0000000000000000000000000000000000080001' as Address,
-        otherTokenNetwork = '0x0000000000000000000000000000000000090001' as Address;
-
-      action$.subscribe(action => state$.next(raidenReducer(state$.value, action)));
-
-      state$.next(raidenReducer(state$.value, newBlock({ blockNumber: 126 })));
-      depsMock.provider.resetEventsBlock(state$.value.blockNumber);
-
+    test('initTokensRegistryEpic: scan initially, monitor previous then', async () => {
       depsMock.provider.getLogs.mockResolvedValueOnce([
         makeLog({
           blockNumber: 121,
@@ -189,47 +172,73 @@ describe('raiden epic', () => {
         }),
       ]);
 
-      const output = initMonitorRegistryEpic(action$, state$, depsMock)
-        .pipe(
-          tap(action => state$.next(raidenReducer(state$.value, action))),
-          take(2),
-          finalize(() => (action$.complete(), state$.complete())),
-          toArray(),
-        )
-        .toPromise();
+      // without an open channel, TokenNetwork isn't of interest and shouldn't be monitored
+      await expect(
+        initTokensRegistryEpic(EMPTY, of(state), depsMock).toPromise(),
+      ).resolves.toBeUndefined();
 
-      depsMock.provider.resetEventsBlock(127);
-      action$.next(newBlock({ blockNumber: 127 }));
-
-      setTimeout(
-        () =>
-          depsMock.provider.emit(
-            depsMock.registryContract.filters.TokenNetworkCreated(null, null),
-            makeLog({
-              blockNumber: 127,
-              filter: depsMock.registryContract.filters.TokenNetworkCreated(
-                otherToken,
-                otherTokenNetwork,
-              ),
-            }),
-          ),
-        10,
-      );
-
-      await expect(output).resolves.toEqual([
-        tokenMonitored({ token, tokenNetwork, fromBlock: 121 }),
-        tokenMonitored({ token: otherToken, tokenNetwork: otherTokenNetwork, fromBlock: 127 }),
-      ]);
+      expect(depsMock.provider.getLogs).toHaveBeenCalledTimes(3);
       expect(depsMock.provider.getLogs).toHaveBeenCalledWith(
         expect.objectContaining({
           ...depsMock.registryContract.filters.TokenNetworkCreated(null, null),
           fromBlock: depsMock.contractsInfo.TokenNetworkRegistry.block_number,
-          toBlock: 126,
+          toBlock: 'latest',
         }),
       );
 
-      action$.complete();
-      state$.complete();
+      depsMock.provider.getLogs.mockClear();
+
+      // mocks getLogs for TokenNetworkCreated events
+      depsMock.provider.getLogs.mockResolvedValueOnce([
+        makeLog({
+          blockNumber: 121,
+          filter: depsMock.registryContract.filters.TokenNetworkCreated(token, tokenNetwork),
+        }),
+      ]);
+
+      // mocks getLogs for TokenNetworkCreated events
+      depsMock.provider.getLogs.mockResolvedValueOnce([
+        makeLog({
+          blockNumber: 122,
+          filter: tokenNetworkContract.filters.ChannelOpened(
+            channelId,
+            depsMock.address,
+            partner,
+            null,
+          ),
+          data: defaultAbiCoder.encode(['uint256'], [settleTimeout]),
+        }),
+      ]);
+
+      await expect(
+        initTokensRegistryEpic(EMPTY, of(state), depsMock)
+          .pipe(toArray())
+          .toPromise(),
+      ).resolves.toEqual([tokenMonitored({ token, tokenNetwork, fromBlock: 121 })]);
+
+      expect(depsMock.provider.getLogs).toHaveBeenCalledTimes(2);
+      expect(depsMock.provider.getLogs).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: tokenNetwork,
+          topics: expect.arrayContaining([
+            expect.stringMatching(depsMock.address.substr(2).toLowerCase()),
+          ]),
+          toBlock: 'latest',
+        }),
+      );
+
+      depsMock.provider.getLogs.mockClear();
+
+      await expect(
+        initTokensRegistryEpic(
+          EMPTY,
+          of([tokenMonitored({ token, tokenNetwork })].reduce(raidenReducer, state)),
+          depsMock,
+        )
+          .pipe(toArray())
+          .toPromise(),
+      ).resolves.toEqual([tokenMonitored({ token, tokenNetwork })]);
+      expect(depsMock.provider.getLogs).toHaveBeenCalledTimes(0);
     });
 
     test('ShutdownReason.ACCOUNT_CHANGED', async () => {
@@ -265,7 +274,7 @@ describe('raiden epic', () => {
         state$ = depsMock.latest$.pipe(pluckDistinct('state'));
       action$.next(newBlock({ blockNumber: 122 }));
 
-      const error = new Error('connection lost');
+      const error = new RaidenError(ErrorCodes.RDN_GENERAL_ERROR);
       depsMock.provider.listAccounts.mockRejectedValueOnce(error);
 
       // whole raidenRootEpic completes upon raidenShutdown, with it as last emitted value
@@ -310,11 +319,19 @@ describe('raiden epic', () => {
         .pipe(first())
         .toPromise();
 
-      await expect(promise).resolves.toMatchObject({
-        type: channelOpen.success.type,
-        payload: { id: channelId, settleTimeout, openBlock: 121 },
-        meta: { tokenNetwork, partner },
-      });
+      await expect(promise).resolves.toEqual(
+        channelOpen.success(
+          {
+            id: channelId,
+            settleTimeout,
+            isFirstParticipant: true,
+            txHash: expect.any(String),
+            txBlock: 121,
+            confirmed: undefined,
+          },
+          { tokenNetwork, partner },
+        ),
+      );
 
       expect(depsMock.provider.getLogs).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -336,7 +353,7 @@ describe('raiden epic', () => {
         .toPromise();
 
       depsMock.provider.emit(
-        tokenNetworkContract.filters.ChannelOpened(null, depsMock.address, null, null),
+        tokenNetworkContract.filters.ChannelOpened(null, null, null, null),
         makeLog({
           blockNumber: 125,
           filter: tokenNetworkContract.filters.ChannelOpened(
@@ -349,11 +366,19 @@ describe('raiden epic', () => {
         }),
       );
 
-      await expect(promise).resolves.toMatchObject({
-        type: channelOpen.success.type,
-        payload: { id: channelId, settleTimeout, openBlock: 125 },
-        meta: { tokenNetwork, partner },
-      });
+      await expect(promise).resolves.toEqual(
+        channelOpen.success(
+          {
+            id: channelId,
+            settleTimeout,
+            isFirstParticipant: true,
+            txHash: expect.any(String),
+            txBlock: 125,
+            confirmed: undefined,
+          },
+          { tokenNetwork, partner },
+        ),
+      );
     });
 
     test("ensure multiple tokenMonitored don't produce duplicated events", async () => {
@@ -375,7 +400,7 @@ describe('raiden epic', () => {
 
       // even though multiple tokenMonitored events were fired, blockchain fires a single event
       depsMock.provider.emit(
-        tokenNetworkContract.filters.ChannelOpened(null, depsMock.address, null, null),
+        tokenNetworkContract.filters.ChannelOpened(null, null, null, null),
         makeLog({
           blockNumber: 125,
           filter: tokenNetworkContract.filters.ChannelOpened(
@@ -390,92 +415,151 @@ describe('raiden epic', () => {
 
       const result = await promise;
       expect(result).toHaveLength(1);
-      expect(result[0]).toMatchObject({
-        type: channelOpen.success.type,
-        payload: { id: channelId, settleTimeout, openBlock: 125 },
-        meta: { tokenNetwork, partner },
-      });
+      expect(result[0]).toEqual(
+        channelOpen.success(
+          {
+            id: channelId,
+            settleTimeout,
+            isFirstParticipant: true,
+            txHash: expect.any(String),
+            txBlock: 125,
+            confirmed: undefined,
+          },
+          { tokenNetwork, partner },
+        ),
+      );
 
       // one for channels with us, one for channels from us
-      expect(depsMock.provider.on).toHaveBeenCalledTimes(2);
+      expect(depsMock.provider.on).toHaveBeenCalledTimes(1);
     });
   });
 
-  describe('deliveredEpic', () => {
-    test('success with cached', async () => {
-      expect.assertions(4);
+  describe('confirmationEpic', () => {
+    beforeEach(() => action$.next(raidenConfigUpdate({ confirmationBlocks: 5 })));
 
-      const message: Signed<Processed> = {
-          type: MessageType.PROCESSED,
-          message_identifier: makeMessageId(),
-          signature: makeSignature(),
-        },
-        roomId = partnerRoomId,
-        action = messageReceived(
-          {
-            text: encodeJsonMessage(message),
-            message,
-            ts: 123,
-            userId: partnerUserId,
-            roomId,
-          },
-          { address: partner },
-        ),
-        action$ = of(action, action);
+    test('confirmed', async () => {
+      expect.assertions(7);
+      let output: ConfirmableAction | undefined = undefined;
 
-      const signerSpy = jest.spyOn(depsMock.signer, 'signMessage');
-      const promise = deliveredEpic(action$, EMPTY, depsMock)
-        .pipe(toArray())
-        .toPromise();
-
-      const output = await promise;
-      expect(output).toHaveLength(2);
-      expect(output[1]).toMatchObject({
-        type: messageSend.request.type,
-        payload: {
-          message: {
-            type: MessageType.DELIVERED,
-            delivered_message_identifier: message.message_identifier,
-            signature: expect.any(String),
-          },
-        },
-        meta: { address: partner },
+      const sub = confirmationEpic(action$, state$, depsMock).subscribe(o => {
+        action$.next(o);
+        output = o;
       });
-      expect(output[0].payload.message).toBe(output[1].payload.message); // same cached object
 
-      expect(signerSpy).toHaveBeenCalledTimes(1);
-      signerSpy.mockRestore();
+      const currentState = async () =>
+        depsMock.latest$.pipe(pluckDistinct('state'), first()).toPromise();
+
+      const pending = channelOpen.success(
+        {
+          id: channelId,
+          settleTimeout,
+          isFirstParticipant,
+          txHash,
+          txBlock: 122,
+          confirmed: undefined,
+        },
+        { tokenNetwork, partner },
+      );
+
+      action$.next(newBlock({ blockNumber: 121 }));
+      action$.next(pending);
+      action$.next(newBlock({ blockNumber: 122 }));
+
+      // pending tx (confirmed=undefined) is stored in state
+      await expect(currentState()).resolves.toMatchObject({
+        blockNumber: 122,
+        config: { confirmationBlocks: 5 },
+        pendingTxs: [pending],
+      });
+      expect(output).toBeUndefined();
+
+      // at least confirmationBlocks passed, but getTransactionReceipt returns invalid
+      depsMock.provider.getTransactionReceipt.mockResolvedValueOnce(null as any);
+      action$.next(newBlock({ blockNumber: 127 }));
+
+      expect(depsMock.provider.getTransactionReceipt).toHaveBeenCalledTimes(1);
+      expect(output).toBeUndefined();
+
+      // give some time to exhaustMap to be free'd
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // now, confirmed, but reorged to block=123
+      depsMock.provider.getTransactionReceipt.mockResolvedValueOnce({
+        confirmations: 6,
+        blockNumber: 123,
+      } as any);
+      action$.next(newBlock({ blockNumber: 129 }));
+
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(depsMock.provider.getTransactionReceipt).toHaveBeenCalledTimes(2);
+      expect(output).toMatchObject({
+        payload: {
+          txHash,
+          txBlock: 123,
+          confirmed: true,
+        },
+      });
+      await expect(currentState()).resolves.toMatchObject({
+        blockNumber: 129,
+        pendingTxs: [],
+      });
+
+      sub.unsubscribe();
     });
 
-    test('do not reply if not message type which should be replied', async () => {
-      expect.assertions(2);
+    test('confirmed', async () => {
+      expect.assertions(4);
+      let output: ConfirmableAction | undefined = undefined;
 
-      // Delivered messages aren't in the set of messages which get replied with a Delivered
-      const message: Signed<Delivered> = {
-          type: MessageType.DELIVERED,
-          delivered_message_identifier: makeMessageId(),
-          signature: makeSignature(),
+      const sub = confirmationEpic(action$, state$, depsMock).subscribe(o => {
+        action$.next(o);
+        output = o;
+      });
+
+      const currentState = async () =>
+        depsMock.latest$.pipe(pluckDistinct('state'), first()).toPromise();
+
+      const pending = channelOpen.success(
+        {
+          id: channelId,
+          settleTimeout,
+          isFirstParticipant,
+          txHash,
+          txBlock: 122,
+          confirmed: undefined,
         },
-        roomId = partnerRoomId,
-        action$ = of(
-          messageReceived(
-            {
-              text: encodeJsonMessage(message),
-              message,
-              ts: 123,
-              userId: partnerUserId,
-              roomId,
-            },
-            { address: partner },
-          ),
-        );
+        { tokenNetwork, partner },
+      );
 
-      const signerSpy = jest.spyOn(depsMock.signer, 'signMessage');
-      const promise = deliveredEpic(action$, EMPTY, depsMock).toPromise();
+      action$.next(newBlock({ blockNumber: 121 }));
+      action$.next(pending);
 
-      await expect(promise).resolves.toBeUndefined();
-      expect(signerSpy).toHaveBeenCalledTimes(0);
-      signerSpy.mockRestore();
+      // can't get receipt, confirmationBlocks < n < 2*confirmationBlocks passed
+      depsMock.provider.getTransactionReceipt.mockResolvedValueOnce(null as any);
+      action$.next(newBlock({ blockNumber: 129 }));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(output).toBeUndefined();
+
+      // still can't get receipt, n > 2*confirmationBlocks passed
+      depsMock.provider.getTransactionReceipt.mockResolvedValueOnce(null as any);
+      action$.next(newBlock({ blockNumber: 133 }));
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(depsMock.provider.getTransactionReceipt).toHaveBeenCalledTimes(2);
+      expect(output).toMatchObject({
+        payload: {
+          txHash,
+          txBlock: 122,
+          confirmed: false,
+        },
+      });
+      await expect(currentState()).resolves.toMatchObject({
+        blockNumber: 133,
+        pendingTxs: [],
+      });
+
+      sub.unsubscribe();
     });
   });
 });

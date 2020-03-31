@@ -1,7 +1,7 @@
 jest.mock('vue-router');
 
 import { RouteNames } from '@/router/route-names';
-import { createLocalVue, shallowMount, Wrapper } from '@vue/test-utils';
+import { shallowMount, Wrapper } from '@vue/test-utils';
 import NavigationMixin from '@/mixins/navigation-mixin';
 import VueRouter from 'vue-router';
 import { TestData } from '../../data/mock-data';
@@ -15,14 +15,12 @@ describe('NavigationMixin', () => {
     router = new VueRouter() as Mocked<VueRouter>;
     router.push = jest.fn().mockReturnValue(null);
 
-    const localVue = createLocalVue();
     const component = {
       render() {},
       mixins: [NavigationMixin]
     };
 
     wrapper = shallowMount(component as any, {
-      localVue,
       mocks: {
         $router: router,
         $route: TestData.mockRoute()
@@ -110,6 +108,39 @@ describe('NavigationMixin', () => {
         }
       })
     );
+  });
+
+  test('navigate to general home', () => {
+    wrapper.vm.navigateToGeneralHome();
+
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: RouteNames.GENERAL_HOME
+      })
+    );
+  });
+
+  test('navigate to backup state', () => {
+    wrapper.vm.navigateToBackupState();
+
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: RouteNames.BACKUP_STATE
+      })
+    );
+  });
+
+  test('general modal back navigation', () => {
+    wrapper.vm.$route.name = RouteNames.TRANSFER;
+    wrapper.vm.navigateToGeneralHome();
+    wrapper.vm.onGeneralBackClicked();
+
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.go).toHaveBeenCalledTimes(1);
+    expect(router.go).toHaveBeenCalledWith(-1);
+    expect(wrapper.vm.$route.name).toBe(RouteNames.TRANSFER);
   });
 
   describe('back navigation', () => {

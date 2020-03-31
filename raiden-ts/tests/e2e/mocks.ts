@@ -1,7 +1,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any,@typescript-eslint/camelcase */
-import { requestCallback, RequestOpts } from 'matrix-js-sdk';
-
 import { Storage } from 'raiden-ts/utils/types';
+
+export interface RequestOpts {
+  uri: string;
+  method: string;
+  withCredentials?: boolean;
+  qs?: any;
+  qsStringifyOptions?: any;
+  useQuerystring?: boolean;
+  body?: any;
+  json?: boolean;
+  timeout?: number;
+  headers?: any;
+}
+export type RequestCallback = (err?: Error, response?: any, body?: any) => void;
 
 export const MockStorage: jest.Mock<jest.Mocked<Storage>, [{ [key: string]: string }?]> = jest.fn(
   function(init?: { [key: string]: string }) {
@@ -41,18 +53,24 @@ export class MockMatrixRequestFn {
       this.respond(callback, 200, { filter_id: 'a filter id' });
 
     const displayNames: { [userId: string]: string } = {};
-    this.endpoints['/displayname'] = (opts, callback) => {
+    const avatarUrls: { [userId: string]: string } = {};
+    this.endpoints['/profile'] = (opts, callback) => {
       const match = /\/profile\/([^/]+)/i.exec(opts.uri),
         userId = match && match[1] && decodeURIComponent(match[1]);
       if (opts.method === 'PUT') {
         const body = JSON.parse(opts.body),
-          displayName = body['displayname'];
-        if (!userId || !displayName) return this.respond(callback, 400, {});
-        displayNames[userId] = displayName;
+          displayName = body['displayname'],
+          avatarUrl = body['avatar_url'];
+        if (!userId) return this.respond(callback, 400, {});
+        if (displayName) displayNames[userId] = displayName;
+        if (avatarUrl) avatarUrls[userId] = avatarUrl;
         return this.respond(callback, 200, {});
       } else {
         if (userId && userId in displayNames)
-          return this.respond(callback, 200, { displayname: displayNames[userId] });
+          return this.respond(callback, 200, {
+            displayname: displayNames[userId],
+            avatar_url: avatarUrls[userId],
+          });
         return this.respond(callback, 404, {});
       }
     };
@@ -65,6 +83,7 @@ export class MockMatrixRequestFn {
       });
     };
     this.endpoints['/status'] = (opts, callback) => {
+      if (opts.method !== 'GET') return this.respond(callback, 200, {});
       const match = /\/presence\/([^/]+)/i.exec(opts.uri),
         userId = match && match[1] && decodeURIComponent(match[1]);
       if (userId && userId in displayNames)
@@ -76,13 +95,16 @@ export class MockMatrixRequestFn {
       return this.respond(callback, 404, {});
     };
 
-    this.endpoints['/join'] = ({}, callback) => this.respond(callback, 200, {});
+    this.endpoints['/join'] = ({}, callback) =>
+      this.respond(callback, 200, { room_id: `!${Math.random()}:${server}` });
     this.endpoints['/createRoom'] = ({}, callback) =>
       this.respond(callback, 200, { room_id: `!${Math.random()}:${server}` });
     this.endpoints['/versions'] = ({}, callback) => this.respond(callback, 200, {});
+    this.endpoints['/send/m.room.message'] = ({}, callback) =>
+      this.respond(callback, 200, { event_id: `$eventId_${Date.now()}` });
   }
 
-  public requestFn(opts: RequestOpts, callback: requestCallback): any {
+  public requestFn(opts: RequestOpts, callback: RequestCallback): any {
     if (this.stopped) {
       callback(new Error('stopped!'));
       return;
@@ -98,7 +120,7 @@ export class MockMatrixRequestFn {
   }
 
   public respond(
-    callback: requestCallback,
+    callback: RequestCallback,
     code: number,
     data: any,
     timeout?: number,
@@ -110,6 +132,11 @@ export class MockMatrixRequestFn {
     } else {
       body = JSON.stringify(data);
       type = 'application/json';
+    }
+
+    if (!timeout) {
+      callback(undefined, { statusCode: code, headers: { 'content-type': type } }, body);
+      return () => undefined;
     }
 
     let timeoutId: NodeJS.Timeout | undefined;
@@ -139,6 +166,6 @@ export class MockMatrixRequestFn {
   private cancelations: (() => void)[] = [];
   private stopped = false;
   public endpoints: {
-    [path: string]: (opts: RequestOpts, callback: requestCallback) => () => void;
+    [path: string]: (opts: RequestOpts, callback: RequestCallback) => () => void;
   } = {};
 }

@@ -223,11 +223,20 @@ describe('store', () => {
     ).toEqual([]);
   });
 
-  test('the token getter returns an empty array when the token has no channels ', () => {
+  test('the token getter returns an empty array when the token has no channels', () => {
     const channels = {
       '0xd0A1E359811322d97991E03f863a0C30C2cF029C': {}
     };
     store.commit('updateChannels', channels);
     expect(store.getters.tokens).toEqual([]);
+  });
+
+  test('return only pending transfers ', () => {
+    [
+      { secrethash: '0x1', completed: true },
+      { secrethash: '0x2', completed: false }
+    ].forEach(transfer => store.commit('updateTransfers', transfer));
+    const { pendingTransfers } = store.getters;
+    expect(Object.keys(pendingTransfers).length).toEqual(1);
   });
 });

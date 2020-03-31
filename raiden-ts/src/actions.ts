@@ -7,7 +7,7 @@ import * as t from 'io-ts';
 import { ShutdownReason } from './constants';
 import { PartialRaidenConfig } from './config';
 import { ActionType, createAction, Action } from './utils/actions';
-import { ErrorCodec } from './utils/types';
+import { ErrorCodec } from './utils/error';
 
 import * as ChannelsActions from './channels/actions';
 import * as TransportActions from './transport/actions';
@@ -28,10 +28,7 @@ export const raidenShutdown = createAction(
 );
 export interface raidenShutdown extends ActionType<typeof raidenShutdown> {}
 
-export const raidenConfigUpdate = createAction(
-  'raidenConfigUpdate',
-  t.type({ config: PartialRaidenConfig }),
-);
+export const raidenConfigUpdate = createAction('raidenConfigUpdate', PartialRaidenConfig);
 export interface raidenConfigUpdate extends ActionType<typeof raidenConfigUpdate> {}
 
 const RaidenActions = {
@@ -57,3 +54,45 @@ export const RaidenEvents = [
 ];
 /* Tagged union of RaidenEvents actions */
 export type RaidenEvent = ActionType<typeof RaidenEvents>;
+
+/**
+ * Set of [serializable] actions which are first emitted with
+ * payload.confirmed=undefined, then, after confirmation blocks, either with confirmed=true if tx
+ * is still present on blockchain, or confirmed=false if it got removed by a reorg.
+ *
+ * These actions must comply with the following type:
+ * {
+ *   payload: {
+ *     txHash: Hash;
+ *     txBlock: number;
+ *     confirmed: undefined | boolean;
+ *   };
+ *   meta: any;
+ * }
+ */
+export const ConfirmableActions = [
+  ChannelsActions.channelOpen.success,
+  ChannelsActions.channelDeposit.success,
+  ChannelsActions.channelWithdrawn,
+  ChannelsActions.channelClose.success,
+  ChannelsActions.channelSettle.success,
+  TransfersActions.transferSecretRegistered,
+];
+/**
+ * Union of codecs of actions above
+ */
+export const ConfirmableAction = t.union([
+  ChannelsActions.channelOpen.success.codec,
+  ChannelsActions.channelDeposit.success.codec,
+  ChannelsActions.channelWithdrawn.codec,
+  ChannelsActions.channelClose.success.codec,
+  ChannelsActions.channelSettle.success.codec,
+  TransfersActions.transferSecretRegistered.codec,
+]);
+export type ConfirmableAction =
+  | ChannelsActions.channelOpen.success
+  | ChannelsActions.channelDeposit.success
+  | ChannelsActions.channelWithdrawn
+  | ChannelsActions.channelClose.success
+  | ChannelsActions.channelSettle.success
+  | TransfersActions.transferSecretRegistered;

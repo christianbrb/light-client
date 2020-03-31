@@ -23,67 +23,20 @@
             <div class="app-header__top__content__title">
               {{ $route.meta.title }}
             </div>
-            <div class="app-header__top__content__network">
-              {{ network }}
-            </div>
+            <div class="app-header__top__content__network">{{ network }}</div>
           </v-col>
           <v-spacer></v-spacer>
-          <div>
-            <v-img
-              :src="$blockie(defaultAccount)"
-              height="36"
-              width="36"
-              contain
-              aspect-ratio="1"
-              class="app-header__top__content__blockie"
-            ></v-img>
-          </div>
+          <header-identicon @click.native="navigateToGeneralHome()" />
         </div>
       </v-col>
     </v-row>
     <v-row class="app-header__bottom" align="center" no-gutters>
       <v-col cols="6">
         <div class="app-header__bottom__address text-left">
-          <v-tooltip bottom>
-            <template #activator="{ on }">
-              <span v-on="on">
-                {{ defaultAccount | truncate(8) }}
-              </span>
-            </template>
-            <span>{{ defaultAccount }}</span>
-          </v-tooltip>
-          <v-tooltip bottom dark close-delay="1500">
-            <template #activator="{ on }">
-              <v-btn id="copyBtn" text icon @click="copy()" v-on="on">
-                <v-img
-                  :src="require('../assets/copy_icon.svg')"
-                  class="app-header__bottom__address__copy"
-                  contain
-                ></v-img>
-              </v-btn>
-            </template>
-            <span>
-              {{
-                copied ? $t('app-header.copy-success') : $t('app-header.copy')
-              }}
-            </span>
-          </v-tooltip>
-        </div>
-      </v-col>
-      <v-col cols="6">
-        <div class="app-header__bottom__balance text-right">
-          {{ accountBalance | decimals }}
-          <span class="app-header__bottom__balance__currency">
-            {{ $t('app-header.currency') }}
-          </span>
+          <address-display :address="defaultAccount" />
         </div>
       </v-col>
     </v-row>
-    <textarea
-      ref="copy"
-      v-model="defaultAccount"
-      class="app-header__copy-area"
-    ></textarea>
   </div>
 </template>
 
@@ -93,8 +46,11 @@ import { mapGetters, mapState } from 'vuex';
 import BlockieMixin from '@/mixins/blockie-mixin';
 import { RouteNames } from '@/router/route-names';
 import NavigationMixin from '@/mixins/navigation-mixin';
+import HeaderIdenticon from '@/components/HeaderIdenticon.vue';
+import AddressDisplay from '@/components/AddressDisplay.vue';
 
 @Component({
+  components: { HeaderIdenticon, AddressDisplay },
   computed: {
     ...mapState(['loading', 'defaultAccount', 'accountBalance']),
     ...mapGetters(['network'])
@@ -106,9 +62,6 @@ export default class AppHeader extends Mixins(BlockieMixin, NavigationMixin) {
   accountBalance!: string;
   network!: string;
 
-  copied: boolean = false;
-  private timeout: number = 0;
-
   get canGoBack(): boolean {
     const routesWithoutBackBtn: string[] = [
       RouteNames.HOME,
@@ -116,27 +69,13 @@ export default class AppHeader extends Mixins(BlockieMixin, NavigationMixin) {
     ];
     return !routesWithoutBackBtn.includes(this.$route.name!);
   }
-
-  copy() {
-    const copyArea = this.$refs.copy as HTMLTextAreaElement;
-    copyArea.focus();
-    copyArea.select();
-    this.copied = document.execCommand('copy');
-
-    if (this.timeout) {
-      clearTimeout(this.timeout);
-    }
-
-    this.timeout = (setTimeout(() => {
-      this.copied = false;
-    }, 2000) as unknown) as number;
-  }
 }
 </script>
 
 <style scoped lang="scss">
-@import '../main';
+@import '../scss/mixins';
 @import '../scss/colors';
+@import '../scss/fonts';
 
 $row-horizontal-padding: 20px;
 $header-content-horizontal-margin: 20px;
@@ -160,15 +99,6 @@ $header-content-horizontal-margin: 20px;
       margin-right: $header-content-horizontal-margin;
       margin-left: $header-content-horizontal-margin;
 
-      &__blockie {
-        border-radius: 50%;
-        box-sizing: border-box;
-        height: 36px;
-        width: 36px;
-        border: 1px solid #979797;
-        background-color: #d8d8d8;
-      }
-
       &__back {
         display: flex;
         flex-direction: column;
@@ -180,7 +110,7 @@ $header-content-horizontal-margin: 20px;
 
       &__title {
         color: #ffffff;
-        font-family: Roboto, sans-serif;
+        font-family: $main-font;
         font-size: 24px;
         line-height: 28px;
         text-align: center;
@@ -200,32 +130,6 @@ $header-content-horizontal-margin: 20px;
     padding-right: $row-horizontal-padding;
     height: 40px;
     background-color: $error-tooltip-background;
-
-    &__address {
-      color: #ffffff;
-      font-family: Roboto, sans-serif;
-      font-size: 16px;
-      line-height: 19px;
-      display: flex;
-      align-items: center;
-
-      &__copy {
-        height: 12px;
-        width: 12px;
-      }
-    }
-
-    &__balance {
-      color: #ffffff;
-      font-family: Roboto, sans-serif;
-      font-size: 16px;
-      line-height: 19px;
-    }
-  }
-
-  &__copy-area {
-    position: absolute;
-    left: -999em;
   }
 }
 </style>

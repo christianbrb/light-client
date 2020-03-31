@@ -1,5 +1,10 @@
 <template>
-  <v-form v-model="valid" autocomplete="off" class="open-channel">
+  <v-form
+    v-model="valid"
+    autocomplete="off"
+    class="open-channel"
+    @submit.prevent="openChannel()"
+  >
     <v-row align="center" justify="center">
       <v-col cols="10">
         <amount-input
@@ -17,67 +22,61 @@
 
     <divider></divider>
 
-    <v-row align="center" justify="center" class="open-channel__hub">
+    <v-row align="center" justify="center" no-gutters class="open-channel__hub">
       <v-col cols="2" class="open-channel__hub__label text-left">
         {{ $t('open-channel.hub') }}
       </v-col>
       <v-col cols="8" class="open-channel__hub__address text-left">
-        {{ partner }}
+        <address-display :address="partner" />
       </v-col>
     </v-row>
 
     <action-button
       :enabled="valid"
       :text="$t('open-channel.open-button')"
-      @click="openChannel()"
     ></action-button>
 
-    <stepper
-      :display="loading"
+    <open-channel-dialog
+      :visible="loading"
       :steps="steps"
-      :done-step="doneStep"
       :current="current"
       :done="done"
-    ></stepper>
+      :done-step="doneStep"
+      @cancel="dismiss()"
+    ></open-channel-dialog>
 
-    <error-screen
-      :description="error"
-      :title="$t('open-channel.error.title')"
-      :button-label="$t('open-channel.error.button')"
-      @dismiss="error = ''"
-    ></error-screen>
+    <error-dialog :error="error" @dismiss="error = null" />
   </v-form>
 </template>
 
 <script lang="ts">
 import { Component, Mixins } from 'vue-property-decorator';
 import AmountInput from '../components/AmountInput.vue';
-import {
-  ChannelDepositFailed,
-  ChannelOpenFailed
-} from '@/services/raiden-service';
 import { emptyDescription, StepDescription, Token } from '@/model/types';
 import { BalanceUtils } from '@/utils/balance-utils';
-import Stepper from '@/components/Stepper.vue';
 import { Zero } from 'ethers/constants';
 import AddressUtils from '@/utils/address-utils';
 import NavigationMixin from '@/mixins/navigation-mixin';
 import { Route } from 'vue-router';
-import ErrorScreen from '@/components/ErrorScreen.vue';
+import ErrorDialog from '@/components/ErrorDialog.vue';
 import Divider from '@/components/Divider.vue';
 import TokenInformation from '@/components/TokenInformation.vue';
+import AddressDisplay from '@/components/AddressDisplay.vue';
 import ActionButton from '@/components/ActionButton.vue';
 import { mapGetters } from 'vuex';
 import { getAmount } from '@/utils/query-params';
+import OpenChannelDialog from '@/components/OpenChannelDialog.vue';
+import { RaidenError } from 'raiden-ts';
 
 @Component({
   components: {
     TokenInformation,
     Divider,
-    ErrorScreen,
-    Stepper,
+    ErrorDialog,
     ActionButton,
-    AmountInput
+    AmountInput,
+    AddressDisplay,
+    OpenChannelDialog
   },
   computed: {
     ...mapGetters({
@@ -93,13 +92,17 @@ export default class OpenChannel extends Mixins(NavigationMixin) {
 
   valid: boolean = false;
   loading: boolean = false;
-  error: string = '';
+  error: Error | RaidenError | null = null;
 
   steps: StepDescription[] = [];
 
   doneStep: StepDescription = emptyDescription();
   current = 0;
   done = false;
+
+  dismiss() {
+    this.loading = false;
+  }
 
   get token(): Token {
     const { token: address } = this.$route.params;
@@ -150,15 +153,7 @@ export default class OpenChannel extends Mixins(NavigationMixin) {
         this.navigateToSelectTransferTarget(address);
       }, 2000);
     } catch (e) {
-      this.error = '';
-      if (e instanceof ChannelOpenFailed) {
-        this.error = this.$t('open-channel.error.open-failed') as string;
-      } else if (e instanceof ChannelDepositFailed) {
-        this.error = this.$t('open-channel.error.deposit-failed') as string;
-      } else {
-        this.error = e.message;
-      }
-
+      this.error = e;
       this.done = false;
       this.loading = false;
     }
@@ -194,6 +189,8 @@ export default class OpenChannel extends Mixins(NavigationMixin) {
 </script>
 
 <style scoped lang="scss">
+@import '../scss/fonts';
+
 .open-channel {
   height: 100%;
   width: 100%;
@@ -204,7 +201,7 @@ export default class OpenChannel extends Mixins(NavigationMixin) {
     max-height: 30px;
     &__label {
       color: #ffffff;
-      font-family: Roboto, sans-serif;
+      font-family: $main-font;
       font-size: 16px;
       font-weight: bold;
       line-height: 19px;
@@ -213,7 +210,7 @@ export default class OpenChannel extends Mixins(NavigationMixin) {
 
     &__address {
       color: #ffffff;
-      font-family: Roboto, sans-serif;
+      font-family: $main-font;
       font-size: 16px;
       line-height: 20px;
       overflow-x: hidden;

@@ -1,3 +1,5 @@
+const path = require('path');
+
 module.exports = {
   root: true,
   env: {
@@ -12,6 +14,9 @@ module.exports = {
     '@vue/prettier',
     '@vue/typescript',
     'plugin:vue-i18n/recommended',
+    'plugin:import/errors',
+    'plugin:import/warnings',
+    'plugin:import/typescript'
   ],
   rules: {
     'no-console': process.env.NODE_ENV === 'production' ? 'error' : 'off',
@@ -44,7 +49,7 @@ module.exports = {
       }
     ],
     'vue-i18n/no-unused-keys': ['error', {
-      'src': ['./src'],
+      'src': './src',
       'extensions': ['.ts', '.vue']
     }],
     "vue/component-name-in-template-casing": ["error", "kebab-case", {
@@ -59,5 +64,13 @@ module.exports = {
     'vue-i18n': {
       localeDir: './src/locales/*.json',
     },
+    'import/resolver': {
+      alias: {
+        map: [
+          ['@', path.resolve('src')],
+        ],
+        extensions: ['.vue', '.ts', '.d.ts']
+      }
+    }
   },
 };

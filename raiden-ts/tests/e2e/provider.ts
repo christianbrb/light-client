@@ -3,8 +3,9 @@ import ganache, { GanacheServerOptions } from 'ganache-cli';
 import memdown from 'memdown';
 import { range } from 'lodash';
 import asyncPool from 'tiny-async-pool';
+import log from 'loglevel';
 
-import { Web3Provider } from 'ethers/providers';
+import { Web3Provider, AsyncSendable } from 'ethers/providers';
 import { MaxUint256, AddressZero } from 'ethers/constants';
 import { ContractFactory } from 'ethers/contract';
 import { parseUnits, ParamType } from 'ethers/utils';
@@ -16,20 +17,22 @@ import { CustomToken } from 'raiden-ts/contracts/CustomToken';
 import { ServiceRegistry } from 'raiden-ts/contracts/ServiceRegistry';
 import { TokenNetworkRegistryFactory } from 'raiden-ts/contracts/TokenNetworkRegistryFactory';
 import { UserDeposit } from 'raiden-ts/contracts/UserDeposit';
+import { SecretRegistry } from 'raiden-ts/contracts/SecretRegistry';
 import Contracts from '../../raiden-contracts/raiden_contracts/data/contracts.json';
 
 export class TestProvider extends Web3Provider {
-  public constructor(opts?: GanacheServerOptions) {
+  public constructor(web3?: AsyncSendable, opts?: GanacheServerOptions) {
     super(
-      ganache.provider({
-        total_accounts: 3,
-        default_balance_ether: 5,
-        seed: 'testrpc_provider',
-        network_id: 1338,
-        db: memdown(),
-        // logger: console,
-        ...opts,
-      }),
+      web3 ??
+        ganache.provider({
+          total_accounts: 3,
+          default_balance_ether: 5,
+          seed: 'testrpc_provider',
+          network_id: 1338,
+          db: memdown(),
+          // logger: console,
+          ...opts,
+        }),
     );
     this.pollingInterval = 10;
   }
@@ -44,18 +47,33 @@ export class TestProvider extends Web3Provider {
 
   public async mine(count = 1): Promise<number> {
     const blockNumber = await this.getBlockNumber();
-    console.debug(`mining ${count} blocks after blockNumber=${blockNumber}`);
-    const promise = new Promise(resolve => {
+    log.debug(`mining ${count} blocks after blockNumber=${blockNumber}`);
+    const promise = new Promise<number>(resolve => {
       const cb = (b: number): void => {
         if (b < blockNumber + count) return;
         this.removeListener('block', cb);
-        resolve();
+        resolve(b);
       };
       this.on('block', cb);
     });
-    await asyncPool(10, range(count), () => this.send('evm_mine', null));
-    await promise;
-    return this.blockNumber;
+    asyncPool(10, range(count), () => this.send('evm_mine', null));
+    return promise;
+  }
+
+  public async mineUntil(block: number): Promise<number> {
+    const blockNumber = await this.getBlockNumber();
+    block = Math.max(block, blockNumber + 1);
+    log.debug(`mining until block=${block} from ${blockNumber}`);
+    const promise = new Promise<number>(resolve => {
+      const cb = (b: number): void => {
+        if (b < block) return;
+        this.removeListener('block', cb);
+        resolve(b);
+      };
+      this.on('block', cb);
+    });
+    asyncPool(10, range(block - blockNumber), () => this.send('evm_mine', null));
+    return promise;
   }
 
   public async deployRegistry(): Promise<ContractsInfo> {
@@ -63,12 +81,13 @@ export class TestProvider extends Web3Provider {
     const address = accounts[accounts.length - 1],
       signer = this.getSigner(address);
 
-    const secretRegistryContract = await new ContractFactory(
+    const secretRegistryContract = (await new ContractFactory(
       Contracts.contracts.SecretRegistry.abi as ParamType[],
       Contracts.contracts.SecretRegistry.bin,
       signer,
-    ).deploy();
+    ).deploy()) as SecretRegistry;
     await secretRegistryContract.deployed();
+    const secretRegistryDeployBlock = secretRegistryContract.deployTransaction.blockNumber;
 
     const registryContract = (await new ContractFactory(
       Contracts.contracts.TokenNetworkRegistry.abi as ParamType[],
@@ -140,6 +159,10 @@ export class TestProvider extends Web3Provider {
       UserDeposit: {
         address: userDepositContract.address as Address,
         block_number: userDepositDeployBlock!,
+      },
+      SecretRegistry: {
+        address: secretRegistryContract.address as Address,
+        block_number: secretRegistryDeployBlock!,
       },
     };
   }

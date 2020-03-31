@@ -8,6 +8,7 @@ import { AsyncSubject, of, BehaviorSubject } from 'rxjs';
 import { MatrixClient } from 'matrix-js-sdk';
 import { EventEmitter } from 'events';
 import { memoize } from 'lodash';
+import logging from 'loglevel';
 
 jest.mock('ethers/providers');
 import { JsonRpcProvider, EventType, Listener } from 'ethers/providers';
@@ -20,12 +21,15 @@ import { TokenNetworkRegistry } from 'raiden-ts/contracts/TokenNetworkRegistry';
 import { TokenNetwork } from 'raiden-ts/contracts/TokenNetwork';
 import { HumanStandardToken } from 'raiden-ts/contracts/HumanStandardToken';
 import { ServiceRegistry } from 'raiden-ts/contracts/ServiceRegistry';
+import { UserDeposit } from 'raiden-ts/contracts/UserDeposit';
+import { SecretRegistry } from 'raiden-ts/contracts/SecretRegistry';
 
 import { TokenNetworkRegistryFactory } from 'raiden-ts/contracts/TokenNetworkRegistryFactory';
 import { TokenNetworkFactory } from 'raiden-ts/contracts/TokenNetworkFactory';
 import { HumanStandardTokenFactory } from 'raiden-ts/contracts/HumanStandardTokenFactory';
 import { ServiceRegistryFactory } from 'raiden-ts/contracts/ServiceRegistryFactory';
 import { UserDepositFactory } from 'raiden-ts/contracts/UserDepositFactory';
+import { SecretRegistryFactory } from 'raiden-ts/contracts/SecretRegistryFactory';
 
 import 'raiden-ts/polyfills';
 import { RaidenEpicDeps, ContractsInfo } from 'raiden-ts/types';
@@ -33,11 +37,9 @@ import { makeInitialState } from 'raiden-ts/state';
 import { Address, Signature } from 'raiden-ts/utils/types';
 import { getServerName } from 'raiden-ts/utils/matrix';
 import { pluckDistinct } from 'raiden-ts/utils/rx';
-import { UserDeposit } from 'raiden-ts/contracts/UserDeposit';
 import { raidenConfigUpdate, RaidenAction } from 'raiden-ts/actions';
 import { Presences } from 'raiden-ts/transport/types';
 import { makeDefaultConfig } from 'raiden-ts/config';
-import { map } from 'rxjs/operators';
 
 export type MockedContract<T extends Contract> = jest.Mocked<T> & {
   functions: {
@@ -55,6 +57,7 @@ export interface MockRaidenEpicDeps extends RaidenEpicDeps {
   getTokenContract: (address: string) => MockedContract<HumanStandardToken>;
   serviceRegistryContract: MockedContract<ServiceRegistry>;
   userDepositContract: MockedContract<UserDeposit>;
+  secretRegistryContract: MockedContract<SecretRegistry>;
 }
 
 /**
@@ -129,6 +132,7 @@ export function raidenEpicDeps(): MockRaidenEpicDeps {
     provider,
   );
   const address = signer.address as Address;
+  const log = logging.getLogger(`raiden:${address}`);
 
   const registryAddress = '0xregistry';
   const registryContract = TokenNetworkRegistryFactory.connect(
@@ -190,6 +194,14 @@ export function raidenEpicDeps(): MockRaidenEpicDeps {
     '0x0A0000000000000000000000000000000000000a',
   );
 
+  const secretRegistryContract = SecretRegistryFactory.connect(address, signer) as MockedContract<
+    SecretRegistry
+  >;
+
+  for (const func in secretRegistryContract.functions) {
+    jest.spyOn(secretRegistryContract.functions, func as keyof SecretRegistry['functions']);
+  }
+
   const contractsInfo: ContractsInfo = {
       TokenNetworkRegistry: {
         address: registryContract.address as Address,
@@ -203,30 +215,38 @@ export function raidenEpicDeps(): MockRaidenEpicDeps {
         address: userDepositContract.address as Address,
         block_number: 102,
       },
+      SecretRegistry: {
+        address: secretRegistryContract.address as Address,
+        block_number: 102,
+      },
     },
-    state = makeInitialState(
-      { network, address, contractsInfo },
-      { blockNumber, config: { pfsSafetyMargin: 1.1, pfs: 'https://pfs.raiden.test' } },
-    ),
-    defaultConfig = makeDefaultConfig({ network });
+    state = makeInitialState({ network, address, contractsInfo }, { blockNumber }),
+    defaultConfig = makeDefaultConfig(
+      { network },
+      {
+        pfsSafetyMargin: 1.1,
+        pfs: 'https://pfs.raiden.test',
+        httpTimeout: 300,
+        confirmationBlocks: 2,
+      },
+    );
 
   const latest$: RaidenEpicDeps['latest$'] = new BehaviorSubject({
-      action: raidenConfigUpdate({ config: {} }) as RaidenAction,
+      action: raidenConfigUpdate({}) as RaidenAction,
       state,
       config: { ...defaultConfig, ...state.config },
       presences: {} as Presences,
       pfsList: [] as readonly Address[],
     }),
-    config$ = latest$.pipe(
-      pluckDistinct('state', 'config'),
-      map(config => ({ ...defaultConfig, ...config })),
-    );
+    config$ = latest$.pipe(pluckDistinct('config'));
 
   return {
     latest$,
     config$,
     matrix$: new AsyncSubject<MatrixClient>(),
     address,
+    log,
+    defaultConfig,
     network,
     contractsInfo,
     provider,
@@ -236,6 +256,7 @@ export function raidenEpicDeps(): MockRaidenEpicDeps {
     getTokenContract,
     serviceRegistryContract,
     userDepositContract,
+    secretRegistryContract,
   };
 }
 
@@ -273,9 +294,9 @@ export function makeMatrix(userId: string, server: string): jest.Mocked<MatrixCl
   return (Object.assign(new EventEmitter(), {
     startClient: jest.fn(async () => true),
     stopClient: jest.fn(() => true),
-    setDisplayName: jest.fn(async () => true),
     joinRoom: jest.fn(async () => true),
-    loginWithPassword: jest.fn().mockRejectedValue(new Error('invalid password')),
+    // reject to test register
+    login: jest.fn().mockRejectedValue(new Error('invalid password')),
     register: jest.fn(async userName => {
       userId = `@${userName}:${server}`;
       return {
@@ -289,8 +310,11 @@ export function makeMatrix(userId: string, server: string): jest.Mocked<MatrixCl
     })),
     getUserId: jest.fn(() => userId),
     getUsers: jest.fn(() => []),
-    getUser: jest.fn(userId => ({ userId, presence: 'offline' })),
+    getUser: jest.fn(userId => ({ userId, presence: 'offline', setDisplayName: jest.fn() })),
     getProfileInfo: jest.fn(async userId => ({ displayname: `${userId}_display_name` })),
+    setDisplayName: jest.fn(async () => null),
+    setAvatarUrl: jest.fn(async () => null),
+    setPresence: jest.fn(async () => null),
     createRoom: jest.fn(async ({ visibility, invite }) => ({
       room_id: `!roomId_${visibility || 'public'}_with_${(invite || []).join('_')}:${server}`,
       getMember: jest.fn(),

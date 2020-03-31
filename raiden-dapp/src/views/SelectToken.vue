@@ -10,7 +10,7 @@
         <recycle-scroller
           #default="{ item }"
           :items="allTokens"
-          :buffer="20"
+          :buffer="400"
           :item-size="105"
           key-field="address"
           class="select-token__tokens"
@@ -39,14 +39,7 @@
               <v-list-item-subtitle
                 class="select-token__tokens__token__address"
               >
-                <v-tooltip bottom>
-                  <template #activator="{ on }">
-                    <span v-on="on">{{ item.address | truncate }}</span>
-                  </template>
-                  <span>
-                    {{ item.address }}
-                  </span>
-                </v-tooltip>
+                <address-display :address="item.address" />
               </v-list-item-subtitle>
             </v-list-item-content>
             <v-list-item-action-text>
@@ -71,16 +64,18 @@ import { Token } from '@/model/types';
 import NavigationMixin from '@/mixins/navigation-mixin';
 import BlockieMixin from '@/mixins/blockie-mixin';
 import ListHeader from '@/components/ListHeader.vue';
+import Spinner from '@/components/Spinner.vue';
+import AddressDisplay from '@/components/AddressDisplay.vue';
 
 @Component({
-  components: { ListHeader },
+  components: { Spinner, ListHeader, AddressDisplay },
   computed: mapGetters(['allTokens'])
 })
 export default class SelectToken extends Mixins(BlockieMixin, NavigationMixin) {
   allTokens!: Token[];
 
-  mounted() {
-    this.$raiden.fetchTokenData(Object.keys(this.$store.state.tokens));
+  async mounted() {
+    await this.$raiden.fetchTokenList();
   }
 }
 </script>
@@ -88,6 +83,7 @@ export default class SelectToken extends Mixins(BlockieMixin, NavigationMixin) {
 <style lang="scss" scoped>
 @import '../scss/scroll';
 @import '../scss/colors';
+@import '../scss/fonts';
 
 .select-token {
   height: 100%;
@@ -117,6 +113,11 @@ export default class SelectToken extends Mixins(BlockieMixin, NavigationMixin) {
       height: calc(100% - 150px);
       overflow-y: auto;
       @extend .themed-scrollbar;
+
+      .col {
+        height: 100%;
+        max-height: 1000px;
+      }
     }
 
     &__token {
@@ -125,7 +126,7 @@ export default class SelectToken extends Mixins(BlockieMixin, NavigationMixin) {
 
       &__balance {
         color: #ffffff;
-        font-family: Roboto, sans-serif;
+        font-family: $main-font;
         font-size: 16px;
         font-weight: bold;
         line-height: 20px;

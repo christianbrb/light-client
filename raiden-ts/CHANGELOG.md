@@ -1,12 +1,66 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2020-03-27
+
+### Added
+- [#348] Foundation for integration tests w/ Raiden Python client.
+- [#774] Reduced size of transpiled bundle.
+- [#1209] Added transport capabilities.
+- Upgraded `matrix-js-sdk` dependency.
+
+[#348]: https://github.com/raiden-network/light-client/issues/348
+[#774]: https://github.com/raiden-network/light-client/issues/744
+[#1209]: https://github.com/raiden-network/light-client/issues/1209
+
+### Fixed
+- [#1232] Fixed logging.
+
+[#1232]: https://github.com/raiden-network/light-client/issues/1232
+
+## [0.4.2] - 2020-03-05
+### Added
+- [#1135] Add logging to mint & depositToUDC public methods
+- [#152] Enable download of local data (state)
+
+[#152]: https://github.com/raiden-network/light-client/issues/152
+
+### Fixed
+- [#1133] Fix minor bug when minting & depositing to UDC for the first time
+
+## [0.4.1] - 2020-03-04
+### Changed
+- [#1128] Enable faster channel opening & deposit by parallelizing them and their confirmations
+
+### Fixed
+- [#1120] Ensure PFS is updated by sending a PFSCapacityUpdate every time our capacity changes
+- [#1116] Wait for confirmation blocks after mint & depositToUDC to resolve promise
+
+[#1120]: https://github.com/raiden-network/light-client/issues/1120
+[#1128]: https://github.com/raiden-network/light-client/issues/1128
+[#1116]: https://github.com/raiden-network/light-client/issues/1116
+
+## [0.4.0] - 2020-02-28
+### Added
+- [#614] Implement state upgrades and migration
+- [#613] Implement waiting for confirmation blocks on on-chain transactions (configurable)
+- [#1000] Implemented SDK error handling
+
+### Changed
+- [#986] Don't expire locks which secret got registered on-chain
+- [#926] Introduce loglevel logging framework (config.logger now specifies logging level)
+- [#1042] Support decoding addresses on messages on lowercased format
+
+[#1000]: https://github.com/raiden-network/light-client/issues/1000
+
+## [0.3.0] - 2020-02-07
 ### Added
 - [#172] Add derived subkey support
 
 ### Changed
+- [#834] Optimize ethers events polling for several tokens
 - [#684] Support and require Typescript 3.7
 - [#593] Improve PFS url matching.
+- Updated Raiden Contracts to 0.36.0
 
 ## [0.2] - 2019-11-29
 ### Added
@@ -74,7 +128,10 @@
 - Add protocol message implementation.
 
 
-[Unreleased]: https://github.com/raiden-network/light-client/compare/v0.2...HEAD
+[0.4.2]: https://github.com/raiden-network/light-client/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/raiden-network/light-client/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/raiden-network/light-client/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/raiden-network/light-client/compare/v0.2...v0.3.0
 [0.2]: https://github.com/raiden-network/light-client/compare/v0.1.1...v0.2
 [0.1.1]: https://github.com/raiden-network/light-client/compare/v0.1...v0.1.1
 [0.1]: https://github.com/raiden-network/light-client/releases/tag/v0.1

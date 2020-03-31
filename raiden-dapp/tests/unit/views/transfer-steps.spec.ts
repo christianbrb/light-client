@@ -1,5 +1,3 @@
-import { addElemWithDataAppToBody } from '../utils/dialog';
-
 jest.useFakeTimers();
 
 import { mount } from '@vue/test-utils';
@@ -13,16 +11,15 @@ import Mocked = jest.Mocked;
 import VueRouter from 'vue-router';
 
 import TransferSteps from '@/views/TransferSteps.vue';
-import { Route } from '@/model/types';
+import { Route, Token } from '@/model/types';
 import store from '@/store/index';
 import { Tokens } from '@/types';
-import { Token } from '@/model/types';
+
 import { RouteNames } from '@/router/route-names';
 
 Vue.use(Vuetify);
 
 describe('TransferSteps.vue', () => {
-  addElemWithDataAppToBody();
   let vuetify: typeof Vuetify;
   let processingTransfer: jest.SpyInstance;
   let transferDone: jest.SpyInstance;
@@ -71,6 +68,7 @@ describe('TransferSteps.vue', () => {
     return mount(TransferSteps, {
       store,
       vuetify,
+      stubs: ['v-dialog'],
       mocks: {
         $router: router,
         $route: {
@@ -146,8 +144,8 @@ describe('TransferSteps.vue', () => {
     button.trigger('click');
     await flushPromises();
     jest.runOnlyPendingTimers();
-    expect(wrapper.vm.$data.step).toBe(1);
-    expect(wrapper.vm.$data.error).toEqual('failed');
+    expect(wrapper.vm.$data.step).toBe(2);
+    expect(wrapper.vm.$data.error).toMatchObject({ message: 'failed' });
   });
 
   test('enables the continue button and lets the user to proceed to the 3rd step', async () => {
@@ -182,7 +180,7 @@ describe('TransferSteps.vue', () => {
     transferDone = jest.spyOn(wrapper.vm.$data, 'transferDone', 'set');
 
     // Displays total amount
-    const totalAmount = wrapper.find('.transfer-steps__total-amount h2');
+    const totalAmount = wrapper.find('.transfer-summary__transfer-total');
     expect(totalAmount.text()).toMatch(/≈100000.000000.*\n.*SVT/);
 
     // Confirmation btn is enabled
@@ -192,7 +190,7 @@ describe('TransferSteps.vue', () => {
     // Token transfer
     button.trigger('click');
     await flushPromises();
-    jest.advanceTimersByTime(5000);
+    jest.advanceTimersByTime(7000);
 
     expect($raiden.transfer).toHaveBeenCalledTimes(1);
     expect(processingTransfer).toHaveBeenCalledTimes(2);
@@ -230,7 +228,7 @@ describe('TransferSteps.vue', () => {
     transferDone = jest.spyOn(wrapper.vm.$data, 'transferDone', 'set');
 
     // Displays total amount
-    const totalAmount = wrapper.find('.transfer-steps__total-amount h2');
+    const totalAmount = wrapper.find('.transfer-summary__transfer-total');
     expect(totalAmount.text()).toMatch(/≈100000.000000.*\n.*SVT/);
 
     // Confirmation btn is enabled
@@ -246,20 +244,20 @@ describe('TransferSteps.vue', () => {
     expect(processingTransfer).toHaveBeenCalledTimes(1);
     expect(processingTransfer).toHaveBeenNthCalledWith(1, true);
     expect(transferDone).toBeCalledTimes(0);
-    expect(wrapper.vm.$data.error).toEqual('failure');
+    expect(wrapper.vm.$data.error).toBeInstanceOf(Error);
   });
 
-  test('skip to transfer if a direct route is available', async () => {
+  test('skip to transfer summary, if a direct route is available', async () => {
     expect.assertions(2);
     $raiden.directRoute.mockResolvedValueOnce([freeRoute] as RaidenPaths);
     $raiden.transfer.mockResolvedValueOnce(undefined);
     const wrapper = createWrapper({});
     await flushPromises();
-    expect(wrapper.vm.$data.step).toBe(1);
-    expect($raiden.transfer).toHaveBeenCalledTimes(1);
+    expect(wrapper.vm.$data.step).toBe(3);
+    expect($raiden.transfer).toHaveBeenCalledTimes(0);
   });
 
-  test('skip to transfer if a free route is available', async () => {
+  test('skip to transfer summary, if a free route is available', async () => {
     expect.assertions(2);
     $raiden.findRoutes.mockResolvedValue([freeRoute]);
     $raiden.transfer.mockResolvedValueOnce(undefined);
@@ -272,9 +270,12 @@ describe('TransferSteps.vue', () => {
 
     await flushPromises();
     wrapper.find('.action-button__button').trigger('click');
+
     await flushPromises();
-    expect(wrapper.vm.$data.step).toBe(1);
-    expect($raiden.transfer).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(3000);
+
+    expect(wrapper.vm.$data.step).toBe(3);
+    expect($raiden.transfer).toHaveBeenCalledTimes(0);
   });
 
   test('skip pfs selection if free pfs is found', async () => {
@@ -288,7 +289,7 @@ describe('TransferSteps.vue', () => {
     wrapper.vm.setPFS([{ ...raidenPFS, price: Zero } as RaidenPFS, true]);
     await flushPromises();
     jest.advanceTimersByTime(2000);
-    expect(wrapper.vm.$data.step).toBe(2);
-    expect($raiden.transfer).toHaveBeenCalledTimes(1);
+    expect(wrapper.vm.$data.step).toBe(3);
+    expect($raiden.transfer).toHaveBeenCalledTimes(0);
   });
 });

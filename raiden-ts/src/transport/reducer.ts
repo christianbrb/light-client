@@ -1,9 +1,12 @@
-import { get, getOr, isEmpty, set, unset } from 'lodash/fp';
+import get from 'lodash/fp/get';
+import getOr from 'lodash/fp/getOr';
+import isEmpty from 'lodash/fp/isEmpty';
+import set from 'lodash/fp/set';
+import unset from 'lodash/fp/unset';
 
 import { partialCombineReducers } from '../utils/redux';
-import { isActionOf } from '../utils/actions';
-import { RaidenState, initialState } from '../state';
-import { RaidenAction } from '../actions';
+import { createReducer } from '../utils/actions';
+import { initialState } from '../state';
 import { matrixSetup, matrixRoom, matrixRoomLeave } from './actions';
 
 /**
@@ -14,19 +17,21 @@ import { matrixSetup, matrixRoom, matrixRoomLeave } from './actions';
  * @param action - RaidenAction to handle
  * @returns New RaidenState['transport'] slice
  */
-function transport(
-  state: RaidenState['transport'] = initialState.transport,
-  action: RaidenAction,
-) {
-  if (isActionOf(matrixSetup, action)) {
+
+const transport = createReducer(initialState.transport)
+  .handle(matrixSetup, (state, action) => {
+    // immutably remove rooms from state.matrix
+    const { rooms: _, ...noRooms } = { ...state.matrix };
     return {
       ...state,
       matrix: {
-        ...state.matrix,
+        // invalidate rooms map if server has changed
+        ...(state.matrix?.server !== action.payload.server ? noRooms : state.matrix),
         ...action.payload,
       },
     };
-  } else if (isActionOf(matrixRoom, action)) {
+  })
+  .handle(matrixRoom, (state, action) => {
     const path = ['matrix', 'rooms', action.meta.address];
     return set(
       path,
@@ -36,7 +41,8 @@ function transport(
       ],
       state,
     );
-  } else if (isActionOf(matrixRoomLeave, action)) {
+  })
+  .handle(matrixRoomLeave, (state, action) => {
     const path = ['matrix', 'rooms', action.meta.address];
     state = set(
       path,
@@ -45,8 +51,7 @@ function transport(
     );
     if (isEmpty(get(path, state))) state = unset(path, state);
     return state;
-  } else return state;
-}
+  });
 
 /**
  * Nested/combined reducer for transport

@@ -1,23 +1,26 @@
 {
   "name": "raiden-ts",
-  "version": "0.2.2",
+  "version": "0.5.0",
   "description": "Raiden Light Client Typescript/Javascript SDK",
   "main": "dist:cjs/index.js",
   "module": "dist/index.js",
   "esnext": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "start": "npm run contracts && tsc -p src/tsconfig.cjs.json -w",
-    "build": "npm run contracts && tsc -p src/tsconfig.json && tsc -p src/tsconfig.cjs.json && npm run contracts:post",
-    "test": "npm run lint && NODE_ENV=development jest --coverage=true",
+    "start": "npm run versions && npm run contracts && tsc -p src/tsconfig.cjs.json -w",
+    "build": "npm run versions && npm run contracts && tsc -p src/tsconfig.json && tsc -p src/tsconfig.cjs.json && npm run contracts:post",
+    "test": "npm run lint && NODE_ENV=development jest --coverage=true --testPathIgnorePatterns tests/integration",
+    "test:integration": "npm run lint && NODE_ENV=development jest --runInBand --ci --coverage=true --testPathIgnorePatterns tests/unit tests/e2e",
     "lint": "eslint --max-warnings 0 --ext '.ts' .",
-    "clean": "rimraf dist/ dist:cjs/ .coverage/ src/contracts/ src/abi/ src/deployment/",
+    "clean": "rimraf dist/ dist:cjs/ .coverage/ src/contracts/ src/abi/ src/deployment/ src/versions.json",
     "contracts:pre": "node ./scripts/copyContracts.js prebuild",
     "contracts:build": "typechain --target=ethers 'src/abi/*.json' --outDir src/contracts",
     "contracts:post": "node ./scripts/copyContracts.js postbuild",
     "contracts": "npm run contracts:pre && npm run contracts:build",
+    "versions": "node ./scripts/versions.js",
     "docs:generate": "typedoc --ignoreCompilerErrors --mode file --theme markdown --platform vuepress --out ./docs ./src",
     "docs:build": "vuepress build docs",
+    "docs:dev": "vuepress dev docs",
     "prepare": "npm run clean && npm run build"
   },
   "repository": {
@@ -43,53 +46,55 @@
   "devDependencies": {
     "@types/events": "^3.0.0",
     "@types/isomorphic-fetch": "0.0.35",
-    "@types/jest": "^24.0.25",
+    "@types/jest": "^25.1.4",
+    "@types/lodash": "^4.14.149",
     "@types/lossless-json": "^1.0.0",
+    "@types/matrix-js-sdk": "^5.1.0",
     "@types/memdown": "^3.0.0",
     "@types/node-localstorage": "^1.3.0",
     "@types/redux-logger": "^3.0.7",
     "@types/tiny-async-pool": "^1.0.0",
-    "@typescript-eslint/eslint-plugin": "^2.14.0",
-    "@typescript-eslint/parser": "^2.14.0",
+    "@typescript-eslint/eslint-plugin": "^2.25.0",
+    "@typescript-eslint/parser": "^2.25.0",
     "eslint": "^6.8.0",
-    "eslint-config-prettier": "^6.9.0",
-    "eslint-plugin-jsdoc": "^20.0.0",
+    "eslint-config-prettier": "^6.10.1",
+    "eslint-plugin-import": "^2.20.1",
+    "eslint-plugin-jsdoc": "^22.1.0",
     "eslint-plugin-prettier": "^3.1.2",
-    "ganache-cli": "^6.7.0",
-    "jest": "^24.9.0",
+    "ganache-cli": "6.9.1",
+    "jest": "^25.2.0",
     "jest-junit": "^10.0.0",
     "memdown": "^5.1.0",
     "node-localstorage": "^2.1.5",
-    "prettier": "^1.18.2",
-    "rimraf": "^3.0.0",
-    "rxjs-marbles": "^5.0.4",
+    "prettier": "^1.19.1",
+    "rimraf": "^3.0.2",
+    "rxjs-marbles": "^6.0.0",
     "tiny-async-pool": "^1.1.0",
-    "ts-jest": "^24.2.0",
-    "ts-node": "^8.5.3",
-    "typechain": "^1.0.3",
-    "typechain-target-ethers": "^1.0.3",
-    "typedoc": "0.15.6",
-    "typedoc-plugin-markdown": "^2.2.14",
-    "typescript": "^3.7.4",
-    "vuepress": "^1.2.0"
+    "ts-jest": "^25.2.1",
+    "typechain": "^1.0.5",
+    "typechain-target-ethers": "^1.0.4",
+    "typedoc": "0.17.3",
+    "typedoc-plugin-markdown": "^2.2.17",
+    "typescript": "^3.8.3",
+    "vuepress": "^1.4.0"
   },
   "dependencies": {
-    "@types/lodash": "^4.14.149",
     "abort-controller": "^3.0.0",
-    "ethers": "^4.0.41",
-    "fp-ts": "^2.3.1",
-    "io-ts": "^2.0.2",
+    "ethers": "^4.0.46",
+    "fp-ts": "^2.5.3",
+    "io-ts": "^2.1.2",
     "isomorphic-fetch": "^2.2.1",
     "lodash": "^4.17.15",
+    "loglevel": "^1.6.7",
     "lossless-json": "^1.0.3",
-    "matrix-js-sdk": "^2.4.6",
+    "matrix-js-sdk": "^5.1.1",
     "redux": "^4.0.5",
     "redux-logger": "^3.0.6",
     "redux-observable": "^1.2.0",
     "rxjs": "^6.5.4"
   },
   "peerDependencies": {
-    "ethers": "^4.0.41"
+    "ethers": "^4.0.46"
   },
   "files": [
     "/dist*",
@@ -115,9 +120,19 @@
       "sourceType": "module"
     },
     "rules": {
+      "import/order": [
+        "error"
+      ],
+      "import/export": "off",
       "@typescript-eslint/explicit-function-return-type": "off",
       "@typescript-eslint/no-non-null-assertion": "off",
       "@typescript-eslint/no-empty-interface": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          "varsIgnorePattern": "^_"
+        }
+      ],
       "jsdoc/no-types": "warn",
       "jsdoc/require-param-type": "off",
       "jsdoc/require-returns-type": "off",
@@ -133,7 +148,10 @@
       "plugin:@typescript-eslint/recommended",
       "prettier/@typescript-eslint",
       "plugin:prettier/recommended",
-      "plugin:jsdoc/recommended"
+      "plugin:jsdoc/recommended",
+      "plugin:import/errors",
+      "plugin:import/warnings",
+      "plugin:import/typescript"
     ]
   },
   "eslintIgnore": [

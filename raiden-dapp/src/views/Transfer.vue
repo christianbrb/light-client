@@ -1,76 +1,69 @@
 <template>
-  <v-form v-model="valid" autocomplete="off" class="transfer">
-    <v-container fluid class="transfer__settings">
-      <v-row
-        align="center"
-        justify="center"
-        no-gutters
-        class="transfer__actions"
-      >
-        <v-col cols="2" class="transfer__channels">
-          <v-btn
-            text
-            class="transfer__channel-button"
-            @click="navigateToChannels(token.address)"
-          >
-            {{ $t('transfer.channel-button') }}
-          </v-btn>
-        </v-col>
-        <v-col cols="6" class="transfer__token-networks">
-          <div class="transfer__token-networks__amount">
-            <v-tooltip top>
-              <template #activator="{ on }">
-                <span v-on="on">
-                  {{ capacity | displayFormat(token.decimals) }}
-                  {{ token.symbol || '' }}
-                </span>
-              </template>
-              <span>
-                {{ capacity | toUnits(token.decimals) }}
+  <v-container fluid class="transfer__settings">
+    <v-row justify="center" no-gutters class="transfer__actions">
+      <v-col cols="3" sm="2" class="transfer__channels">
+        <v-btn
+          text
+          class="transfer__channel-button"
+          @click="navigateToChannels(token.address)"
+        >
+          {{ $t('transfer.channel-button') }}
+        </v-btn>
+      </v-col>
+      <v-col cols="6" class="transfer__token-networks">
+        <div class="transfer__token-networks__amount">
+          <v-tooltip top>
+            <template #activator="{ on }">
+              <span v-on="on">
+                {{ capacity | displayFormat(token.decimals) }}
                 {{ token.symbol || '' }}
               </span>
-            </v-tooltip>
-          </div>
-          <div
-            class="transfer__token-networks__dropdown"
-            @click="showTokenNetworks = true"
-          >
-            <span>{{ token.name }}</span>
-            <span>
-              <down-arrow />
-            </span>
-          </div>
-          <token-overlay
-            :show="showTokenNetworks"
-            @cancel="showTokenNetworks = false"
-          />
-        </v-col>
-        <v-col cols="2" class="transfer__deposit">
-          <v-dialog v-model="depositing" max-width="625">
-            <template #activator="{ on }">
-              <v-btn
-                text
-                class="transfer__deposit-button"
-                @click="depositing = true"
-                v-on="on"
-              >
-                {{ $t('transfer.deposit-button') }}
-              </v-btn>
             </template>
-            <v-card class="transfer__deposit-dialog">
-              <channel-deposit
-                :token="token"
-                identifier="0"
-                @cancel="depositing = false"
-                @confirm="deposit($event)"
-              ></channel-deposit>
-            </v-card>
-          </v-dialog>
-        </v-col>
-      </v-row>
+            <span>
+              {{ capacity | toUnits(token.decimals) }}
+              {{ token.symbol || '' }}
+            </span>
+          </v-tooltip>
+        </div>
+        <div
+          class="transfer__token-networks__dropdown"
+          @click="showTokenNetworks = true"
+        >
+          <span>{{ token.name }}</span>
+          <span>
+            <down-arrow />
+          </span>
+        </div>
+        <token-overlay
+          :show="showTokenNetworks"
+          @cancel="showTokenNetworks = false"
+        />
+      </v-col>
+      <v-col cols="3" sm="2" class="transfer__deposit">
+        <v-btn text class="transfer__deposit-button" @click="depositing = true">
+          {{ $t('transfer.deposit-button') }}
+        </v-btn>
+        <channel-deposit-dialog
+          :loading="loading"
+          :done="done"
+          :token="token"
+          :visible="depositing"
+          identifier="0"
+          @cancel="depositing = false"
+          @depositTokens="deposit($event)"
+        />
+      </v-col>
+    </v-row>
 
+    <v-form
+      v-model="valid"
+      autocomplete="off"
+      class="transfer"
+      novalidate
+      @submit.prevent="navigateToTransferSteps(target, amount)"
+    >
       <v-row justify="center" align="center" class="transfer__recipient">
-        <v-col cols="10">
+        <v-col cols="12" sm="10">
           <address-input
             v-model="target"
             :exclude="[token.address, defaultAccount]"
@@ -80,7 +73,7 @@
       </v-row>
 
       <v-row justify="center" align="center">
-        <v-col cols="10">
+        <v-col cols="12" sm="10">
           <amount-input
             v-model="amount"
             :token="token"
@@ -99,42 +92,28 @@
         class="transfer__action-button"
         sticky
         arrow
-        @click="navigateToTransferSteps(target, amount)"
       ></action-button>
-    </v-container>
-
-    <stepper
-      :display="loading"
-      :steps="steps"
-      :done-step="doneStep"
-      :done="done"
-    ></stepper>
-
-    <error-screen
-      :description="error"
-      :title="errorTitle"
-      :button-label="$t('transfer.error.button')"
-      @dismiss="error = ''"
-    ></error-screen>
-  </v-form>
+      <error-dialog :error="error" @dismiss="error = null"></error-dialog>
+    </v-form>
+  </v-container>
 </template>
 
 <script lang="ts">
 import { Component, Mixins } from 'vue-property-decorator';
 import AddressInput from '@/components/AddressInput.vue';
 import AmountInput from '@/components/AmountInput.vue';
-import { emptyDescription, StepDescription, Token } from '@/model/types';
+import { Token } from '@/model/types';
 import Stepper from '@/components/Stepper.vue';
-import ErrorScreen from '@/components/ErrorScreen.vue';
+import ErrorDialog from '@/components/ErrorDialog.vue';
 import Divider from '@/components/Divider.vue';
 import TokenOverlay from '@/components/TokenOverlay.vue';
 import TokenInformation from '@/components/TokenInformation.vue';
 import ActionButton from '@/components/ActionButton.vue';
-import ChannelDeposit from '@/components/ChannelDeposit.vue';
+import ChannelDepositDialog from '@/components/ChannelDepositDialog.vue';
 import DownArrow from '@/components/icons/DownArrow.vue';
 import { BigNumber } from 'ethers/utils';
 import { mapGetters, mapState } from 'vuex';
-import { RaidenChannel, ChannelState } from 'raiden-ts';
+import { RaidenChannel, ChannelState, RaidenError } from 'raiden-ts';
 import { Zero } from 'ethers/constants';
 import AddressUtils from '@/utils/address-utils';
 import NavigationMixin from '@/mixins/navigation-mixin';
@@ -143,14 +122,14 @@ import BlockieMixin from '@/mixins/blockie-mixin';
 
 @Component({
   components: {
-    ChannelDeposit,
+    ChannelDepositDialog,
     ActionButton,
     TokenInformation,
     Divider,
     AddressInput,
     AmountInput,
     Stepper,
-    ErrorScreen,
+    ErrorDialog,
     DownArrow,
     TokenOverlay
   },
@@ -171,11 +150,7 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
   done: boolean = false;
   depositing: boolean = false;
 
-  errorTitle: string = '';
-  error: string = '';
-
-  steps: StepDescription[] = [];
-  doneStep: StepDescription = emptyDescription();
+  error: Error | RaidenError | null = null;
 
   channels!: (tokenAddress: string) => RaidenChannel[];
 
@@ -225,14 +200,6 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
   }
 
   async deposit(amount: BigNumber) {
-    this.steps = [
-      (this.$t('transfer.steps.deposit') as any) as StepDescription
-    ];
-    this.doneStep = (this.$t(
-      'transfer.steps.deposit-done'
-    ) as any) as StepDescription;
-    this.errorTitle = this.$t('transfer.error.deposit-title') as string;
-
     this.loading = true;
 
     try {
@@ -242,18 +209,19 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
         amount
       );
       this.done = true;
+      this.loading = false;
       this.dismissProgress();
     } catch (e) {
-      this.error = e.message;
+      this.error = e;
+      this.loading = false;
+      this.depositing = false;
     }
-    this.loading = false;
-    this.depositing = false;
   }
 
   private dismissProgress() {
     setTimeout(() => {
-      this.loading = false;
       this.done = false;
+      this.depositing = false;
     }, 2000);
   }
 }
@@ -261,9 +229,19 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
 
 <style lang="scss" scoped>
 @import '../scss/colors';
+@import '../scss/mixins';
+@import '../scss/fonts';
+
 .transfer {
-  width: 100%;
-  height: 100%;
+  &__settings {
+    width: 100%;
+    height: 100%;
+  }
+
+  &__channels,
+  &__deposit {
+    margin-top: 29px;
+  }
 
   &__actions {
     margin-top: 10px;
@@ -271,6 +249,10 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
 
   &__recipient {
     margin-top: 75px;
+
+    @include respond-to(handhelds) {
+      margin-top: 0;
+    }
 
     &__label {
       color: $secondary-color;
@@ -295,6 +277,10 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
   &__deposit-button {
     color: $primary-color;
     text-transform: none;
+    font-size: 16px;
+    letter-spacing: 1px;
+    font-weight: 500;
+    font-family: $main-font;
   }
 
   &__token-networks {
@@ -311,7 +297,10 @@ export default class Transfer extends Mixins(BlockieMixin, NavigationMixin) {
     &__dropdown {
       color: $primary-color;
       font-size: 16px;
-      margin-top: 5px;
+      letter-spacing: 1px;
+      font-weight: 500;
+      font-family: $main-font;
+      margin-top: 7px;
       cursor: pointer;
       text-align: center;
 

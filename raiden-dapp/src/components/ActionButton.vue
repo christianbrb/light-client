@@ -8,6 +8,7 @@
   >
     <v-col :cols="sticky ? 12 : 10" class="text-center">
       <v-btn
+        type="submit"
         :disabled="!enabled"
         :loading="loading"
         class="text-capitalize action-button__button"
@@ -48,6 +49,7 @@ export default class ActionButton extends Vue {
 </script>
 <style lang="scss" scoped>
 @import '../scss/colors';
+@import '../scss/mixins';
 
 ::v-deep {
   .v-btn {
@@ -74,6 +76,11 @@ export default class ActionButton extends Vue {
       border-radius: 0;
       border-bottom-left-radius: 10px;
       border-bottom-right-radius: 10px;
+
+      @include respond-to(handhelds) {
+        border-bottom-left-radius: 0;
+        border-bottom-right-radius: 0;
+      }
     }
 
     &:hover {
@@ -93,7 +100,7 @@ export default class ActionButton extends Vue {
 .theme {
   &--dark {
     .v-btn {
-      .v-btn {
+      &.v-btn {
         &--disabled {
           /* stylelint-disable */
           // can't nest class inside nesting

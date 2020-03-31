@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Contract, Event } from 'ethers';
+import { Contract, Event } from 'ethers/contract';
 import { Provider, JsonRpcProvider, Listener, EventType, Filter, Log } from 'ethers/providers';
 import { Network } from 'ethers/utils';
 import { getNetwork as parseNetwork } from 'ethers/utils/networks';
-import { flatten, sortBy } from 'lodash';
 import { Observable, fromEventPattern, merge, from, of, EMPTY, combineLatest, defer } from 'rxjs';
 import { filter, first, map, switchMap, mergeMap, share } from 'rxjs/operators';
+import flatten from 'lodash/flatten';
+import sortBy from 'lodash/sortBy';
 
 import { isntNil } from './types';
 
@@ -54,7 +55,9 @@ export function getEventsStream<T extends any[]>(
     // parse log into [...args, event: Event] array,
     // the same that contract.on events/callbacks
     const parsed = contract.interface.parseLog(log);
-    if (!parsed) return;
+    // ignore removed (reorg'd) events (reorgs are handled by ConfirmableActions logic)
+    // and parse errors (shouldn't happen)
+    if (log.removed === true || !parsed) return;
     const args = Array.prototype.slice.call(parsed.values);
     // not all parameters quite needed right now, but let's comply with the interface
     const event: Event = {
@@ -85,7 +88,7 @@ export function getEventsStream<T extends any[]>(
         ? of(provider.blockNumber)
         : fromEthersEvent<number>(provider, 'block').pipe(
             first(),
-            map(b => provider.blockNumber || b),
+            map(b => provider.blockNumber ?? b),
           ),
     ).pipe(share());
     pastEvents$ = combineLatest(fromBlock$, nextBlock$).pipe(
@@ -105,7 +108,7 @@ export function getEventsStream<T extends any[]>(
   // where lastSeenBlock is the currentBlock at call time
   // doesn't complete, keep emitting events for each new block (if any) until unsubscription
   const newEvents$: Observable<T> = nextBlock$.pipe(
-    mergeMap(() => from(filters)),
+    switchMap(() => from(filters)),
     mergeMap(filter => fromEthersEvent<Log>(provider, filter)),
     map(logToEvent),
     filter(isntNil),

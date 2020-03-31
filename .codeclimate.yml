@@ -12,3 +12,18 @@ checks:
   similar-code:
     config:
       threshold: 100
+plugins:
+    git-legal:
+      enabled: true
+      config:
+        allow_affero_copyleft: false
+        allow_strong_copyleft: false
+exclude_patterns:
+  - "**/node_modules/"
+  - "raiden-ts/raiden-contracts/"
+  - "raiden-ts/src/contracts/"
+  - "raiden-ts/dist:cjs/"
+  - "**/tests/"
+  - "**/dist/"
+  - "**/*.d.ts"
+  - "**/coverage/"

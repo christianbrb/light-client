@@ -1,16 +1,15 @@
-// import * as t from 'io-ts';
-import { ThrowReporter } from 'io-ts/lib/ThrowReporter';
-import { isLeft } from 'fp-ts/lib/Either';
-
-import { Signer } from 'ethers';
+import * as t from 'io-ts';
+import { Signer } from 'ethers/abstract-signer';
 import { keccak256, RLP, verifyMessage } from 'ethers/utils';
 import { arrayify, concat, hexlify } from 'ethers/utils/bytes';
 import { HashZero } from 'ethers/constants';
+import logging from 'loglevel';
 
-import { Address, Hash, HexString, Signature, UInt, Signed } from '../utils/types';
+import { Address, Hash, HexString, Signature, UInt, Signed, decode, assert } from '../utils/types';
 import { encode, losslessParse, losslessStringify } from '../utils/data';
 import { SignedBalanceProof } from '../channels/types';
 import { EnvelopeMessage, Message, MessageType, Metadata } from './types';
+import { messageReceived } from './actions';
 
 const CMDIDs: { readonly [T in MessageType]: number } = {
   [MessageType.DELIVERED]: 12,
@@ -21,7 +20,6 @@ const CMDIDs: { readonly [T in MessageType]: number } = {
   [MessageType.REFUND_TRANSFER]: 8,
   [MessageType.UNLOCK]: 4,
   [MessageType.LOCK_EXPIRED]: 13,
-  [MessageType.TO_DEVICE]: 14,
   [MessageType.WITHDRAW_REQUEST]: 15,
   [MessageType.WITHDRAW_CONFIRMATION]: 16,
   [MessageType.WITHDRAW_EXPIRED]: 17,
@@ -185,14 +183,6 @@ export function packMessage(message: Message) {
           encode(message.secret, 32),
         ]),
       ) as HexString<44>;
-    case MessageType.TO_DEVICE:
-      return hexlify(
-        concat([
-          encode(CMDIDs[message.type], 1),
-          encode(0, 3),
-          encode(message.message_identifier, 8),
-        ]),
-      ) as HexString<12>;
     case MessageType.WITHDRAW_REQUEST:
     case MessageType.WITHDRAW_CONFIRMATION:
       return hexlify(
@@ -287,13 +277,14 @@ export function getBalanceProofFromEnvelopeMessage(
 
 /**
  * Encode a Message as a JSON string
- * Uses lossless-json to encode BigNumbers as JSON 'number' type, as Raiden
+ * Uses lossless-json to encode BigNumbers as JSON 'string' type, as Raiden
  *
  * @param message - Message object to be serialized
  * @returns JSON string
  */
-export function encodeJsonMessage(message: Signed<Message>): string {
-  return losslessStringify(Signed(Message).encode(message));
+export function encodeJsonMessage(message: Message | Signed<Message>): string {
+  if ('signature' in message) return losslessStringify(Signed(Message).encode(message));
+  return losslessStringify(Message.encode(message));
 }
 
 /**
@@ -303,11 +294,17 @@ export function encodeJsonMessage(message: Signed<Message>): string {
  * @param text - JSON string to try to decode
  * @returns Message object
  */
-export function decodeJsonMessage(text: string): Signed<Message> {
-  const parsed = losslessParse(text),
-    decoded = Signed(Message).decode(parsed);
-  if (isLeft(decoded)) throw ThrowReporter.report(decoded); // throws if decode failed
-  return decoded.right;
+export function decodeJsonMessage(text: string): Message | Signed<Message> {
+  const parsed = losslessParse(text);
+  assert(
+    parsed &&
+      typeof parsed === 'object' &&
+      'type' in parsed &&
+      Object.values(MessageType).some(t => t === parsed['type']),
+    `Invalid message type: ${parsed?.['type']}`,
+  );
+  if ('signature' in parsed) return decode(Signed(Message), parsed);
+  return decode(Message, parsed);
 }
 
 /**
@@ -320,9 +317,31 @@ export function decodeJsonMessage(text: string): Signed<Message> {
 export async function signMessage<M extends Message>(
   signer: Signer,
   message: M,
+  { log }: { log: logging.Logger } = { log: logging },
 ): Promise<Signed<M>> {
   if (isSigned(message)) return message;
-  console.log(`Signing message "${message.type}"`, message);
+  log.debug(`Signing message "${message.type}"`, message);
   const signature = (await signer.signMessage(arrayify(packMessage(message)))) as Signature;
   return { ...message, signature };
+}
+
+/**
+ * Type of a specific messageReceived action which validates & narrows payload.message type
+ */
+export type messageReceivedTyped<M extends Message> = messageReceived & {
+  payload: { message: M };
+};
+
+/**
+ * Typeguard to ensure an action is a messageReceived of any of a set of Message types
+ *
+ * @param messageCodecs - Message codec to test action.payload.message against
+ * @returns Typeguard intersecting messageReceived action and payload.message schemas
+ */
+export function isMessageReceivedOfType<C extends t.Mixed>(messageCodecs: C | [C, C, ...C[]]) {
+  return (action: unknown): action is messageReceivedTyped<t.TypeOf<C>> =>
+    messageReceived.is(action) &&
+    (Array.isArray(messageCodecs)
+      ? t.union(messageCodecs).is(action.payload.message)
+      : messageCodecs.is(action.payload.message));
 }

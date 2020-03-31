@@ -2,9 +2,9 @@
 /* eslint-disable @typescript-eslint/class-name-casing */
 import * as t from 'io-ts';
 
-import { Message } from './types';
 import { createAction, ActionType, createAsyncAction } from '../utils/actions';
 import { Address, Signed } from '../utils/types';
+import { Message } from './types';
 
 /** One-shot send payload.message to meta.address user in transport */
 export const messageSend = createAsyncAction(
@@ -41,12 +41,11 @@ export const messageReceived = createAction(
       ts: t.number,
     }),
     t.partial({
-      message: Signed(Message),
+      message: t.union([Message, Signed(Message)]),
       userId: t.string,
       roomId: t.string,
     }),
   ]),
-
   t.type({ address: Address }),
 );
 export interface messageReceived extends ActionType<typeof messageReceived> {}

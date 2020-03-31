@@ -1,5 +1,12 @@
 version: 2.1
 
+templates:
+  filter-tag-templates: &filter-version-regex
+    tags:
+      only: /^v\d+\.\d+\.\d+$/
+    branches:
+      ignore: /.*/
+
 var_1: &docker_image circleci/node:12-browsers
 var_2: &sdk_cache_key raiden-ts-{{ .Branch }}-{{ checksum "package-lock.json" }}
 var_3: &dapp_cache_key raiden-dapp-{{ .Branch }}-{{ checksum "package-lock.json" }}
@@ -33,6 +40,24 @@ jobs:
           root: .
           paths:
             - ./*
+
+  check_licenses:
+    executor: base-executor
+    working_directory: ~/
+    steps:
+      - attach_workspace: *attach_options
+      - run:
+          name: Update $PATH
+          command: echo 'export PATH=$PATH:$HOME/node_modules/.bin' >> $BASH_ENV
+      - run:
+          name: Install license checker
+          command: npm install license-checker@25.0.1
+      - run:
+          name: Check SDK Licenses
+          command: cd ~/src/raiden-ts && license-checker --production --onlyAllow 'MIT;BSD;Apache;MPL;LGPL;ZPL;ISC;WTFPL;Unlicense' --excludePackages 'uuid@2.0.1' --excludePrivatePackages # uuid@2.0.1 has an issue with the license information but it is licensed under MIT
+      - run:
+          name: Check dApp Licenses
+          command: cd ~/src/raiden-dapp && license-checker --production --onlyAllow 'MIT;BSD;Apache;MPL;LGPL;ZPL;ISC;WTFPL;Unlicense' --excludePackages 'uuid@2.0.1' --excludePrivatePackages # uuid@2.0.1 has an issue with the license information but it is licensed under MIT
 
   install_sdk:
     executor: base-executor
@@ -90,7 +115,7 @@ jobs:
           name: Run unit tests
           command: npm run test -- --ci --runInBand --reporters=default --reporters=jest-junit
           environment:
-            JEST_JUNIT_OUTPUT: "reports/junit/js-test-results.xml"
+            JEST_JUNIT_OUTPUT_DIR: "reports/junit"
       - store_test_results:
           path: reports/junit
       - store_artifacts:
@@ -108,7 +133,7 @@ jobs:
           name: Run unit tests
           command: npm run test:unit -- --ci --runInBand --reporters=default --reporters=jest-junit
           environment:
-            JEST_JUNIT_OUTPUT: "reports/junit/js-test-results.xml"
+            JEST_JUNIT_OUTPUT_DIR: "reports/junit"
       - store_test_results:
           path: reports/junit
       - store_artifacts:
@@ -122,7 +147,7 @@ jobs:
     working_directory: *dapp_working_dir
     steps:
       - attach_workspace: *attach_options
-      - run: npm run build
+      - run: npm run build -- --mode ghpages
       - persist_to_workspace:
           root: ~/src
           paths:
@@ -149,6 +174,18 @@ jobs:
             - "ed:c9:40:2a:96:6c:90:fd:46:18:2d:bf:8d:a8:a9:b3"
       - run: ./deploy.sh
 
+  publish_artifact:
+    executor: base-executor
+    working_directory: *sdk_working_dir
+    steps:
+      - attach_workspace: *attach_options
+      - run:
+          name: Authenticate with registry
+          command: echo "//registry.npmjs.org/:_authToken=$NPM_AUTH_TOKEN" > ~/.npmrc
+      - run:
+          name: Publish on npm
+          command: npm publish
+
 workflows:
   version: 2
   default_workflow:
@@ -161,6 +198,10 @@ workflows:
           requires:
             - checkout
             - install_sdk
+      - check_licenses:
+          requires:
+            - install_sdk
+            - install_dapp
       - lint_sdk:
           requires:
             - install_sdk
@@ -177,17 +218,40 @@ workflows:
           requires:
             - lint_dapp
             - build_dapp
+
+  publish:
+    jobs:
+      - checkout:
+          filters:
+            <<: *filter-version-regex
+      - install_sdk:
+          requires:
+            - checkout
+          filters:
+            <<: *filter-version-regex
+      - install_dapp:
+          requires:
+            - install_sdk
+          filters:
+            <<: *filter-version-regex
+      - build_dapp:
+          requires:
+            - install_dapp
+          filters:
+            <<: *filter-version-regex
       - generate_documentation:
           requires:
-            - test_dapp
+            - build_dapp
           filters:
-            branches:
-              only:
-                - master
+            <<: *filter-version-regex
       - deploy_gh_pages:
           requires:
             - generate_documentation
           filters:
-            branches:
-              only:
-                - master
+            <<: *filter-version-regex
+      - publish_artifact:
+          context: "Raiden Context"
+          requires:
+            - deploy_gh_pages
+          filters:
+            <<: *filter-version-regex

@@ -1,6 +1,6 @@
-import { Token } from '@/model/types';
-import { parseUnits } from 'ethers/utils';
-import { BigNumber } from 'ethers/utils';
+import { Token, Transfer } from '@/model/types';
+import { parseUnits, BigNumber } from 'ethers/utils';
+
 import { Zero } from 'ethers/constants';
 import {
   Address,
@@ -11,6 +11,8 @@ import {
 import { Route } from 'vue-router';
 import { RouteNames } from '@/router/route-names';
 import { Tokens } from '@/types';
+
+export const paymentId = new BigNumber(4444);
 
 export class TestData {
   static token: Token = {
@@ -117,4 +119,44 @@ export class TestData {
       meta: meta
     };
   }
+
+  static mockDirectTransfer: Transfer = {
+    target: '0x09123456789',
+    hops: 0,
+    transferAmount: new BigNumber(10 ** 8),
+    transferToken: {
+      address: '0xtoken',
+      decimals: 5,
+      balance: parseUnits('1.2', 5),
+      name: 'TestToken',
+      symbol: 'TTT'
+    } as Token,
+    transferTotal: new BigNumber(10 ** 8),
+    paymentId
+  };
+
+  static mockMediatedTransfer: Transfer = {
+    target: '0x09123456789',
+    transferAmount: new BigNumber(10 ** 8),
+    transferToken: {
+      address: '0xtoken',
+      decimals: 5,
+      balance: parseUnits('1.2', 5),
+      name: 'TestToken',
+      symbol: 'TTT'
+    } as Token,
+    transferTotal: new BigNumber(10 ** 8),
+    hops: 1,
+    mediationFee: new BigNumber(10 ** 4),
+    serviceFee: new BigNumber(10 ** 4),
+    serviceToken: {
+      address: '0xtoken',
+      decimals: 5,
+      balance: parseUnits('1.2', 5),
+      name: 'Service Token',
+      symbol: 'SVT'
+    } as Token,
+    pfsAddress: 'https://pfsadr.org',
+    paymentId
+  };
 }

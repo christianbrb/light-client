@@ -1,18 +1,18 @@
 /* eslint-disable @typescript-eslint/class-name-casing */
-/* eslint-disable @typescript-eslint/no-namespace */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as t from 'io-ts';
-import { isMatchWith } from 'lodash';
+import isMatchWith from 'lodash/isMatchWith';
 import { Observable } from 'rxjs';
 import { first, map } from 'rxjs/operators';
-import { Reducer } from 'redux';
 
-import { ErrorCodec, BigNumberC, assert } from './types';
+import { RaidenError, ErrorCodes, ErrorCodec } from '../utils/error';
+import { BigNumberC, assert } from './types';
 
 /**
  * The type of a generic action
  */
 export type Action<TType extends string = string> = { type: TType };
+export type Reducer<S = any, A extends Action = Action> = (state: S | undefined, action: A) => S;
 
 /**
  * The ActionCreator's ReturnType, equivalent but more efficient than t.TypeOf<ActionCodec>
@@ -388,6 +388,31 @@ export function createAsyncAction<
 }
 
 // curried overloads
+function matchMeta(meta: any, action: { meta: any }): boolean;
+function matchMeta(meta: any): (action: { meta: any }) => boolean;
+
+/**
+ * Match a passed meta with an action if returns true if metas are from corresponding actions
+ *
+ * curried (arity=2) for action passed as 2nd param.
+ *
+ * @param meta - meta base for comparison
+ * @param args - curried args array
+ * @param args.0 - action to test meta against the 1st param
+ * @returns true if metas are compatible, false otherwise
+ */
+function matchMeta(meta: any, ...args: [{ meta: any }] | []) {
+  const _match = (action: { meta: any }): boolean =>
+    // like isEqual, but for BigNumbers, use .eq
+    isMatchWith(action.meta, meta, (objVal, othVal) =>
+      // any is to avoid lodash's issue with undefined-returning isMatchWithCustomizer cb type
+      BigNumberC.is(objVal) && BigNumberC.is(othVal) ? objVal.eq(othVal) : (undefined as any),
+    );
+  if (args.length) return _match(args[0]);
+  return _match;
+}
+
+// curried overloads
 export function isResponseOf<
   AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, any, any>
 >(
@@ -418,12 +443,60 @@ export function isResponseOf<
   AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, any, any>
 >(asyncAction: AAC, meta: ActionType<AAC['request']>['meta'], ...args: [unknown] | []) {
   const _isResponseOf = (action: unknown): action is ActionType<AAC['success'] | AAC['failure']> =>
-    isActionOf([asyncAction.success, asyncAction.failure], action) &&
-    // like isEqual, but for BigNumbers, use .eq
-    isMatchWith(action.meta, meta, (objVal, othVal) =>
-      // any is to avoid lodash's issue with undefined-returning isMatchWithCustomizer cb type
-      BigNumberC.is(objVal) && BigNumberC.is(othVal) ? objVal.eq(othVal) : (undefined as any),
-    );
+    isActionOf([asyncAction.success, asyncAction.failure], action) && matchMeta(meta, action);
+
+  if (args.length) return _isResponseOf(args[0]);
+  return _isResponseOf;
+}
+
+// curried overloads
+export function isConfirmationResponseOf<
+  AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, any, any>
+>(
+  asyncAction: AAC,
+  meta: ActionType<AAC['request']>['meta'],
+  action: unknown,
+): action is
+  | (ActionType<AAC['success']> & { payload: { confirmed: boolean } })
+  | ActionType<AAC['failure']>;
+export function isConfirmationResponseOf<
+  AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, any, any>
+>(
+  asyncAction: AAC,
+  meta: ActionType<AAC['request']>['meta'],
+): (
+  action: unknown,
+) => action is
+  | (ActionType<AAC['success']> & { payload: { confirmed: boolean } })
+  | ActionType<AAC['failure']>;
+
+/**
+ * Like isResponseOf, but ignores non-confirmed (or removed by a reorg) success action
+ *
+ * Confirmable success actions are emitted twice: first with payload.confirmed=undefined, then with
+ * either confirmed=true, if tx still present after confirmation blocks, or confirmed=false, if tx
+ * was removed from blockchain by a reorg.
+ * This curied helper filter function ensures only one of the later causes a positive filter.
+ *
+ * @param asyncAction - AsyncActionCreator object
+ * @param meta - meta object to filter matching actions
+ * @param args - curried last param
+ * @returns type guard function to filter deep-equal meta success|failure actions
+ */
+export function isConfirmationResponseOf<
+  AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, any, any>
+>(asyncAction: AAC, meta: ActionType<AAC['request']>['meta'], ...args: [unknown] | []) {
+  function _isConfirmation(action: unknown): action is { payload: { confirmed: boolean } } {
+    return typeof (action as any)?.['payload']?.['confirmed'] === 'boolean';
+  }
+  const _isResponseOf = (
+    action: unknown,
+  ): action is
+    | (ActionType<AAC['success']> & { payload: { confirmed: boolean } })
+    | ActionType<AAC['failure']> =>
+    isResponseOf(asyncAction, meta, action) &&
+    (asyncAction.failure.is(action) || _isConfirmation(action));
+
   if (args.length) return _isResponseOf(args[0]);
   return _isResponseOf;
 }
@@ -434,17 +507,31 @@ export function isResponseOf<
  * @param asyncAction - async actions object to wait for
  * @param meta - meta object of a request to wait for the respective response
  * @param action$ - actions stream to watch for responses
+ * @param confirmed - set if should ignore non-confirmed success response
  * @returns Promise which rejects with payload in case of failure, or resolves payload otherwise
  */
 export async function asyncActionToPromise<
   AAC extends AsyncActionCreator<t.Mixed, any, any, any, any, t.Mixed, t.Mixed>
->(asyncAction: AAC, meta: ActionType<AAC['request']>['meta'], action$: Observable<Action>) {
+>(
+  asyncAction: AAC,
+  meta: ActionType<AAC['request']>['meta'],
+  action$: Observable<Action>,
+  confirmed = false,
+) {
   return action$
     .pipe(
-      first(isResponseOf<AAC>(asyncAction, meta)),
+      first(
+        confirmed
+          ? isConfirmationResponseOf<AAC>(asyncAction, meta)
+          : isResponseOf<AAC>(asyncAction, meta),
+      ),
       map(action => {
         if (asyncAction.failure.is(action))
           throw action.payload as ActionType<AAC['failure']>['payload'];
+        else if (action.payload.confirmed === false)
+          throw new RaidenError(ErrorCodes.RDN_TRANSACTION_REORG, {
+            transactionHash: action.payload.txHash!,
+          });
         return action.payload as ActionType<AAC['success']>['payload'];
       }),
     )
@@ -452,6 +539,14 @@ export async function asyncActionToPromise<
 }
 
 // createReducer
+
+/**
+ * A simplified schema for ActionCreator<any, any, any, any>, to optimize createReducer
+ */
+export type AnyAC = ((payload: any, meta: any) => Action) & {
+  type: string;
+  is: (action: unknown) => action is Action;
+};
 
 /**
  * Create a reducer which can be extended with additional actions handlers
@@ -468,28 +563,62 @@ export async function asyncActionToPromise<
 export function createReducer<S, A extends Action = Action>(initialState: S) {
   // generic handlers as a indexed type for `makeReducer`
   type Handlers = {
-    [type: string]: [ActionCreator<any, any, any, any>, (state: S, action: A) => S];
+    [type: string]: [AnyAC, (state: S, action: A) => S];
   };
-  // a type which only property is the literal string tag and value, a tuple with AC & handler:
-  // { [ac.type]: [ac, (state: S, action: ActionType<AC>) => S] }
-  type Handler<AC> = AC extends ActionCreator<infer TType, any, any, any>
-    ? { [K in TType]: [AC, (state: S, action: ActionType<AC>) => S] }
-    : never;
-  // helper type to 'never' allow 'handle' to receive an already handled action
-  type NotHandled<
-    H extends Handlers,
-    AC extends ActionCreator<any, any, any, any>
-  > = H extends Handler<AC> ? never : AC;
-  // helper type to convert union of Handler into intersection:
-  // UnionToIntersection<Handler<AC1 | AC2>> = { [AC1.type]: [AC1...] } & { [AC2.type]: [AC2...] }
-  type UnionToIntersection<U> = (U extends any
-  ? (k: U) => void
-  : never) extends (k: infer I) => void
-    ? I
-    : never;
+  type Handler<AC extends AnyAC> = (state: S, action: ActionType<AC>) => S;
+  // allows to constrain a generic to not already be part of an union
+  type NotHandled<ACs, AC extends AnyAC> = AC extends ACs ? never : AC;
+
+  // workaround for "Type instantiation is excessively deep and possibly infinite" error
+  // see https://stackoverflow.com/questions/60265325/using-recursive-type-alias-in-generic-results-in-error
+  type I = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15;
+  type Iterate<A extends I = 0> = A extends 0
+    ? 1
+    : A extends 1
+    ? 2
+    : A extends 2
+    ? 3
+    : A extends 3
+    ? 4
+    : A extends 4
+    ? 5
+    : A extends 5
+    ? 6
+    : A extends 6
+    ? 7
+    : A extends 7
+    ? 8
+    : A extends 8
+    ? 9
+    : A extends 9
+    ? 10
+    : A extends 10
+    ? 11
+    : A extends 11
+    ? 12
+    : A extends 12
+    ? 13
+    : A extends 13
+    ? 14
+    : A extends 14
+    ? 15
+    : 15;
+
+  type ExtReducer<ACs, X extends I = 0> = X extends 15
+    ? Reducer<S, A>
+    : Reducer<S, A> & {
+        handle: <
+          AC extends AnyAC & NotHandled<ACs, AD>,
+          H extends Handler<AC>,
+          AD extends AnyAC = AC
+        >(
+          ac: AC | AC[],
+          handler: H,
+        ) => ExtReducer<ACs | AC, Iterate<X>>;
+      };
 
   // make a reducer function for given handlers
-  function makeReducer<H extends Handlers>(handlers: H) {
+  function makeReducer<ACs, X extends I = 0>(handlers: Handlers): ExtReducer<ACs, X> {
     const reducer: Reducer<S, A> = (state: S = initialState, action: A) => {
       if (action.type in handlers && handlers[action.type][0].is(action))
         return handlers[action.type][1](state, action); // calls registered handler
@@ -497,19 +626,19 @@ export function createReducer<S, A extends Action = Action>(initialState: S) {
     };
     // circular dependency on generic params forbids an already handled action from being accepted
     function handle<
-      AC extends ActionCreator<any, any, any, any> & NotHandled<H, AD>,
-      AD extends ActionCreator<any, any, any, any> = AC
-    >(ac: AC | AC[], handler: (state: S, action: ActionType<AC>) => S) {
+      AC extends AnyAC & NotHandled<ACs, AD>,
+      H extends Handler<AC>,
+      AD extends AnyAC = AC
+    >(ac: AC | AC[], handler: H) {
       const arr = Array.isArray(ac) ? ac : [ac];
       assert(!arr.some(a => a.type in handlers), 'Already handled');
-      return makeReducer(
-        Object.assign({}, handlers, ...arr.map(a => ({ [a.type]: [a, handler] }))) as H &
-          UnionToIntersection<Handler<AC>>,
+      return makeReducer<ACs | AC, Iterate<X>>(
+        Object.assign({}, handlers, ...arr.map(ac => ({ [ac.type]: [ac, handler] }))),
       );
     }
     // grow reducer function with our `handle` extender
-    return Object.assign(reducer, { handle });
+    return Object.assign(reducer, { handle }) as ExtReducer<ACs, X>;
   }
   // initially makes a reducer which doesn't handle anything (just returns unchanged state)
-  return makeReducer({});
+  return makeReducer<never>({});
 }

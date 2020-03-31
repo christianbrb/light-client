@@ -1,12 +1,17 @@
-import { Raiden, RaidenSentTransfer, RaidenPaths, RaidenPFS } from 'raiden-ts';
+import {
+  ChangeEvent,
+  EventTypes,
+  Raiden,
+  RaidenPaths,
+  RaidenPFS
+} from 'raiden-ts';
 import { Store } from 'vuex';
-import { RootState } from '@/types';
+import { RootState, Tokens } from '@/types';
 import { Web3Provider } from '@/services/web3-provider';
 import { BalanceUtils } from '@/utils/balance-utils';
 import { DeniedReason, Progress, Token, TokenModel } from '@/model/types';
 import { BigNumber, BigNumberish } from 'ethers/utils';
-import { Zero } from 'ethers/constants';
-import { exhaustMap, filter, first } from 'rxjs/operators';
+import { exhaustMap, filter } from 'rxjs/operators';
 import asyncPool from 'tiny-async-pool';
 import { ConfigProvider } from './config-provider';
 
@@ -17,7 +22,8 @@ export default class RaidenService {
 
   private static async createRaiden(
     provider: any,
-    account: string | number = 0
+    account: string | number = 0,
+    subkey?: true
   ): Promise<Raiden> {
     try {
       return await Raiden.create(
@@ -25,7 +31,12 @@ export default class RaidenService {
         account,
         window.localStorage,
         undefined,
-        { pfsSafetyMargin: 1.1 }
+        {
+          pfsSafetyMargin: 1.1,
+          pfs: process.env.VUE_APP_PFS,
+          matrixServer: process.env.VUE_APP_TRANSPORT
+        },
+        subkey
       );
     } catch (e) {
       throw new RaidenInitializationFailed(e);
@@ -40,6 +51,20 @@ export default class RaidenService {
     }
   }
 
+  async fetchTokenList() {
+    const allTokens = await this.raiden.getTokenList();
+    const toFetch: string[] = [];
+    const placeholders: Tokens = {};
+
+    for (const token of allTokens) {
+      toFetch.push(token);
+      placeholders[token] = { address: token };
+    }
+
+    this.store.commit('updateTokens', placeholders);
+    await this.fetchTokenData(toFetch);
+  }
+
   constructor(store: Store<RootState>) {
     this._raiden = undefined;
     this.store = store;
@@ -52,15 +77,13 @@ export default class RaidenService {
 
   async ensResolve(name: string): Promise<string> {
     try {
-      const address = await this.raiden.resolveName(name);
-      await this.raiden.getAvailability(address);
-      return address;
+      return await this.raiden.resolveName(name);
     } catch (e) {
       throw new EnsResolveFailed(e);
     }
   }
 
-  async connect() {
+  async connect(subkey?: true) {
     try {
       const raidenPackageConfigUrl = process.env.VUE_APP_RAIDEN_PACKAGE;
       let config;
@@ -80,15 +103,21 @@ export default class RaidenService {
         if (config) {
           raiden = await RaidenService.createRaiden(
             provider,
-            config.PRIVATE_KEY
+            config.PRIVATE_KEY,
+            subkey
           );
         } else {
-          raiden = await RaidenService.createRaiden(provider);
+          raiden = await RaidenService.createRaiden(
+            provider,
+            undefined,
+            subkey
+          );
         }
 
         this._raiden = raiden;
 
-        this.store.commit('account', await this.getAccount());
+        const account = await this.getAccount();
+        this.store.commit('account', account);
         this.store.commit('balance', await this.getBalance());
 
         this._userDepositTokenAddress = await raiden.userDepositTokenAddress();
@@ -128,8 +157,16 @@ export default class RaidenService {
           this.store.commit('updateChannels', value);
         });
 
+        // Subscribe to our pending transfers
+        raiden.transfers$.subscribe(transfer => {
+          if (transfer.initiator === account) {
+            this.store.commit('updateTransfers', transfer);
+          }
+        });
+
         this.store.commit('network', raiden.network);
 
+        window.addEventListener('beforeunload', () => this.raiden.stop());
         raiden.start();
       }
     } catch (e) {
@@ -146,6 +183,7 @@ export default class RaidenService {
 
     this.store.commit('loadComplete');
   }
+
   disconnect() {
     this.raiden.stop();
   }
@@ -197,15 +235,11 @@ export default class RaidenService {
     progressUpdater(1, 3);
 
     try {
-      await raiden.openChannel(token, partner);
+      await raiden.openChannel(token, partner, { deposit: amount }, e =>
+        e.type === EventTypes.OPENED ? progressUpdater(2, 3) : ''
+      );
     } catch (e) {
       throw new ChannelOpenFailed(e);
-    }
-
-    progressUpdater(2, 3);
-
-    if (amount.gt(Zero)) {
-      await this.deposit(token, partner, amount);
     }
   }
 
@@ -248,22 +282,17 @@ export default class RaidenService {
     token: string,
     target: string,
     amount: BigNumber,
-    paths: RaidenPaths
+    paths: RaidenPaths,
+    paymentId: BigNumber
   ) {
     try {
       const secretHash = await this.raiden.transfer(token, target, amount, {
-        paths: paths
+        paymentId,
+        paths
       });
 
       // Wait for transaction to be completed
-      await this.raiden.transfers$
-        .pipe(
-          first(
-            (transfer: RaidenSentTransfer) =>
-              transfer.secrethash === secretHash && transfer.completed
-          )
-        )
-        .toPromise();
+      await this.raiden.waitTransfer(secretHash);
     } catch (e) {
       throw new TransferFailed(e);
     }
@@ -277,26 +306,17 @@ export default class RaidenService {
   ): Promise<RaidenPaths> {
     let routes: RaidenPaths;
 
-    try {
-      await this.raiden.getAvailability(target);
-      routes = await this.raiden.findRoutes(token, target, amount, {
-        pfs: raidenPFS
-      });
-    } catch (e) {
-      throw new FindRoutesFailed(e);
-    }
+    await this.raiden.getAvailability(target);
+    routes = await this.raiden.findRoutes(token, target, amount, {
+      pfs: raidenPFS
+    });
 
     return routes;
   }
 
   async fetchServices(): Promise<RaidenPFS[]> {
     let raidenPFS: RaidenPFS[];
-    try {
-      raidenPFS = await this.raiden.findPFS();
-    } catch (e) {
-      throw new PFSRequestFailed(e);
-    }
-
+    raidenPFS = await this.raiden.findPFS();
     return raidenPFS;
   }
 
@@ -315,8 +335,12 @@ export default class RaidenService {
   }
 
   /* istanbul ignore next */
-  async depositToUDC(amount: BigNumber): Promise<void> {
-    await this.raiden.depositToUDC(amount);
+  async depositToUDC(amount: BigNumber, depositing: () => void): Promise<void> {
+    await this.raiden.depositToUDC(
+      amount,
+      (event: ChangeEvent<EventTypes, { txHash: string }>) =>
+        event.type === EventTypes.APPROVED ? depositing() : null
+    );
   }
 
   /* istanbul ignore next */
@@ -334,6 +358,12 @@ export default class RaidenService {
 
     return false;
   }
+
+  /* istanbul ignore next */
+  async getState() {
+    this._raiden?.stop();
+    return await this._raiden?.state$.toPromise();
+  }
 }
 
 export class ChannelSettleFailed extends Error {}
@@ -349,7 +379,3 @@ export class EnsResolveFailed extends Error {}
 export class TransferFailed extends Error {}
 
 export class RaidenInitializationFailed extends Error {}
-
-export class FindRoutesFailed extends Error {}
-
-export class PFSRequestFailed extends Error {}

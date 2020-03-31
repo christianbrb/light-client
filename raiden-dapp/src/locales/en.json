@@ -8,12 +8,27 @@
     },
     "offline": "Please connect to the internet."
   },
+  "general-menu": {
+    "account-details": "Account Details",
+    "address": "Address:",
+    "currency": "ETH:",
+    "menu-items": {
+      "backup-state-title": "Backup state",
+      "backup-state-subtitle": "Download & upload your state"
+    }
+  },
+  "backup-state": {
+    "description": "Currently it is only possible to download the state. Uploading of state coming soon.",
+    "download": "Download State",
+    "download-warning": "Downloading the state will force the dApp to shut down",
+    "download-button": "Download",
+    "upload": "Upload State"
+  },
   "update": {
     "available": "A new version is available.",
     "update": "Refresh"
   },
   "address-input": {
-    "paste-button": "Paste",
     "input": {
       "placeholder": "Enter an address or ENS name..."
     },
@@ -36,13 +51,17 @@
       "empty": "Please enter an amount",
       "too-many-decimals": "Please use only up to {decimals} decimals for this token",
       "not-enough-funds": "Your maximum usable amount is {funds} {symbol}",
-      "zero": "Please enter an amount larger than zero"
+      "zero": "Please enter an amount larger than zero",
+      "invalid": "Please enter a valid amount"
     }
   },
+  "address-display": {
+    "copy": "Click to copy",
+    "copied": "Copied!"
+  },
   "app-header": {
-    "copy": "Copy",
-    "copy-success": "Copied!",
-    "currency": "ETH"
+    "currency": "ETH",
+    "pending-transfers": "no pending transfers | 1 pending transfer | {amount} pending transfers"
   },
   "channel-actions": {
     "deposit": "Deposit",
@@ -60,6 +79,7 @@
   "find-routes": {
     "hops": "Hops",
     "price": "Price",
+    "sub-title": "Route(s) provided by {subdomain} including number of hops and estimated fee",
     "error": {
       "title": "Oops, something went wrong"
     }
@@ -142,14 +162,23 @@
     "generic-error": "A valid account could not be detected. Please make sure that your provider is unlocked and accessible."
   },
   "splash-screen": {
-    "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can just be used on the Ethereum Testnets.",
+    "connect": {
+      "divider": "-OR-",
+      "web3-provider": "Connect using your Web3 provider account.",
+      "raiden-account": {
+        "description": "Connect to Web3 and re-generate a {0}",
+        "link-name": "dedicated Raiden account."
+      }
+    },
+    "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can only be used on Ethereum testnets.",
     "matrix-sign": "On the first launch you get asked to sign two messages to connect to the Raiden transport layer. You sign the matrix server name and the public user name.",
     "getting-started": {
       "description": "Read the {0} for detailed information on how to use the Raiden dApp.",
       "link-name": "getting started guide"
     },
     "connect-button": "Connect",
-    "no-provider": "No web3 provider was detected. Please install e.g. MetaMask"
+    "no-provider": "No Web3 provider detected, please install e.g. MetaMask.",
+    "download-logs": "Download stored Raiden logs"
   },
   "tokens": {
     "connected": {
@@ -185,7 +214,12 @@
   "mint-deposit-dialog": {
     "button": "Mint and deposit",
     "available": "Available {currency} to pay for on-chain transaction: {balance} {currency}",
-    "error": "The mint and deposit operation failed."
+    "error": "The mint and deposit operation failed.",
+    "progress": {
+      "mint": "Minting {currency} tokens",
+      "approve": "Allow UDC to access {currency} tokens",
+      "deposit": "Deposit {currency} tokens to the UDC"
+    }
   },
   "transfer": {
     "deposit-button": "Deposit",
@@ -196,13 +230,15 @@
     "amount-placeholder": "Specify amount...",
     "error": {
       "button": "Dismiss",
-      "title": "Token transfer unsuccessful.",
-      "deposit-title": "Deposit was unsuccessful. Please retry."
+      "title": "Token transfer unsuccessful",
+      "deposit-title": "Deposit failed, please try again."
     },
     "steps": {
       "request-route": {
         "title": "Request Route",
-        "udc-description": "{token} Balance",
+        "tooltip": "Mint and deposit {token} to the User Deposit Contract to pay for PFS requests",
+        "udc-description": "Balance to pay the Pathfinding Service",
+        "udc-description-low-balance": "Your {token} token balance is to low to pay for the Pathfinding Service. Use the button above to mint and deposit more tokens.",
         "in-progress": "Sign the message to pay for the route request",
         "searching-for-route": "Searching for route...",
         "done": "Route request payment complete"
@@ -217,18 +253,18 @@
       "call-to-action": {
         "1": {
           "default": "Transfer Route Request",
-          "amount": "Transfer {amount} {symbol}"
+          "amount": "Confirm PFS Fee of {amount} {symbol}"
         },
         "2": {
           "default": "Confirm Mediation Fees",
-          "amount": "Confirm {amount} {symbol}"
+          "amount": "Confirm Mediation Fee of {amount} {symbol}"
         },
         "3": {
           "amount": "Transfer {amount} {symbol}"
         }
       },
       "transfer": {
-        "title": "Transfering Tokens",
+        "title": "Transferring Tokens",
         "description": "Sign the transaction in MetaMask and close this dialogue to continue using the dApp. Your transfer will finish in the background."
       },
       "done": {
@@ -238,12 +274,30 @@
       "deposit": {
         "label": "Deposit",
         "title": "Depositing Tokens",
-        "description": "Please do not close the browser and confirm the transactions with MetaMask."
+        "description": "Sign the transaction in MetaMask and close this dialogue to continue using the dApp."
       },
       "deposit-done": {
         "label": "Done",
-        "title": "Deposit successful",
-        "description": "Your tokens have been success"
+        "title": "Deposit Successful",
+        "description": "Your tokens have been successfully deposited."
+      },
+      "summary": {
+        "headline": "Summary",
+        "route-request": "Route Request",
+        "pfs": "Pathfinding Service",
+        "service-fee": "Service Fee",
+        "mediated-transfer": "Mediated Transfer",
+        "direct-transfer": "Direct Transfer",
+        "target": "Target",
+        "transfer-amount": "Transfer Amount",
+        "total-amount": "Total Amount",
+        "mediation-fee": "Mediation Fee",
+        "identifier": "Identifier",
+        "footnotes": {
+          "one": "1",
+          "direct-transfer": "Route request and selection skipped, because you are performing a direct transfer.",
+          "route-selection-skipped": "Automatically skipped route selection, because there was only a single route with zero fees."
+        }
       }
     }
   },
@@ -287,22 +341,110 @@
       "done": {
         "label": "Done",
         "title": "New Channel opened",
-        "description": "A new channel has been opened successfully. You may now select a transfer target."
+        "description": "A new channel was successfully opened. You can now start making transfers."
       }
     },
     "confirmation": "Channel opening is in progress, are you sure you want to leave?"
   },
   "token-information": {
     "title": "Token",
-    "description": "{symbol} | {name}"
+    "description": "{symbol} | {name}",
+    "balance": "Balance"
   },
   "pathfinding-services": {
     "title": "Select Pathfinding Service",
     "rtt": "{time} ms",
     "headers": {
-      "host": "PFS",
+      "host": "Pathfinding Service",
       "rtt": "Ping",
       "price": "Price"
+    }
+  },
+  "mint-dialog": {
+    "title": "Mint {symbol}",
+    "description": "If you continue, you will get prompted by MetaMask to sign off a minting transction. In order to mint tokens, you need test net ETH in your wallet."
+  },
+  "error-message": {
+    "problem": "Problem:",
+    "solution": "Solution:"
+  },
+  "errors": {
+    "RDN_GENERAL_ERROR": {
+      "title": "An error occured",
+      "problem": "We do not know this error, sorry.",
+      "solution": "Please file a new issue on https://github.com/raiden-network/light-client."
+    },
+    "RDN_MINT_FAILED": {
+      "title": "Could not mint token",
+      "problem": "It looks like the Light Client does not support minting out-of-the-box for this token contract.",
+      "solution": "You may try to mint manually via MetaMask and Etherscan. You can find a step-by-step guide on https://github.com/raiden-network/light-client#minting-manually."
+    },
+    "PFS_UNKNOWN_TOKEN_NETWORK": {
+      "title": "No open channels",
+      "problem": "You don't seem to have open channels on this token network.",
+      "solution": [
+        "Hit the ← button in the top left", 
+        "Click on the current token network", 
+        "Select Connect new token", 
+        "Select the token you want to transfer", 
+        "Proceed with the flow to open a new channel"
+      ]
+    },
+    "PFS_INVALID_INFO": {
+      "title": "Couldn't understand Pathfinding Service",
+      "problem": "The Light Client has received a response from the Pathfinding Service that it couldn't understand. It's possible that the current Light Client version is out-of-sync with the Pathfinding Service.",
+      "solution": [
+        "Update the dApp by reloading the page",
+        "Attempt a new transfer",
+        "If the problem persists, please file a new issue on https://github.com/raiden-network/light-client"
+      ]
+    },
+    "PFS_NO_ROUTES_FOUND": {
+      "title": "No routes found",
+      "problem": "Pathfinding Service wasn't able to find a route in the Raiden Network to perform your transfer.",
+      "solution": "Make sure that you either have a direct channel with the target or that both of you are connected to a well-connected hub."
+    },
+    "PFS_ERROR_RESPONSE": {
+      "title": "Pathfinding replied with an error",
+      "problem": "While communicating with the Pathfinding Service, you have received an error response that we don't actively handle yet.",
+      "solution": [
+        "Simply retry your last action",
+        "If the problem persists, please help us and report the issue",
+        "Right click > Inspect or Inspect Element", 
+        "Go to Console", 
+        "Copy errors that occurred", 
+        "File a new issue on https://github.com/raiden-network/light-client"
+      ]
+    },
+    "PFS_DISABLED": {
+      "title": "Pathfinding Service disabled",
+      "problem": "You tried to find a route in the Raiden Network but Pathfinding was either disabled in your configuration or you did not select a valid Pathfinding Service.",
+      "solution": "Try to restart the Light Client by reloading the page and attempt a new transfer."
+    },
+    "PFS_TARGET_OFFLINE": {
+      "title": "Target address is offline",
+      "problem": "You are trying to send tokens to an offline target.",
+      "solution": "Hit the ← button and verify that the address is online or choose a different target address."
+    },
+    "PFS_LAST_IOU_REQUEST_FAILED": {
+      "title": "Error while depositing tokens for Pathfinding Service",
+      "problem": "While trying to deposit tokens for route requests, the Pathfinding Service returned an error.",
+      "solution": "This should happen very rarely, please retry to deposit. If the problem persists, please file an issue on https://github.com/raiden-network/light-client."
+    },
+    "PFS_IOU_SIGNATURE_MISMATCH": {
+      "title": "Error while depositing tokens for Pathfinding Service",
+      "problem": "While trying to deposit tokens for route requests, the Pathfinding Service encountered mismatching signatures.",
+      "solution": "This should happen very rarely, please retry to deposit. If the problem persists, please file an issue on https://github.com/raiden-network/light-client."
+    }
+  },
+  "versions": {
+    "sdk": "Raiden SDK: {version}",
+    "contracts": "Raiden Contracts: {version}"
+  },
+  "scan": {
+    "permission": {
+      "title": "Grant Camera Access",
+      "description": "In order to scan QR codes, you will need to allow camera access."
     }
   }
 }
