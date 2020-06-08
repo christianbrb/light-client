@@ -1,5 +1,4 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-/* eslint-disable @typescript-eslint/camelcase */
 import * as t from 'io-ts';
 import { AddressZero } from 'ethers/constants';
 import { Network, getNetwork } from 'ethers/utils';
@@ -9,18 +8,19 @@ import logging from 'loglevel';
 import { PartialRaidenConfig, makeDefaultConfig, RaidenConfig } from './config';
 import { ContractsInfo } from './types';
 import { ConfirmableAction } from './actions';
-import migrateState from './migration';
+import migrateState, { CURRENT_STATE_VERSION } from './migration';
 import { losslessParse, losslessStringify } from './utils/data';
 import { Address, Signed, Storage, decode } from './utils/types';
+import { ChannelKey } from './channels/types';
 import { Channel } from './channels/state';
 import { RaidenMatrixSetup } from './transport/state';
 import { TransfersState } from './transfers/state';
-import { IOU } from './path/types';
+import { IOU } from './services/types';
 import { getNetworkName } from './utils/ethers';
 import { RaidenError, ErrorCodes } from './utils/error';
 
 // same as highest migrator function in migration.index.migrators
-export const CURRENT_STATE_VERSION = 1;
+export { CURRENT_STATE_VERSION } from './migration';
 
 // types
 export const RaidenState = t.readonly(
@@ -31,37 +31,24 @@ export const RaidenState = t.readonly(
     registry: Address,
     blockNumber: t.number,
     config: PartialRaidenConfig,
-    channels: t.readonly(
-      t.record(
-        t.string /* tokenNetwork: Address */,
-        t.readonly(t.record(t.string /* partner: Address */, Channel)),
-      ),
-    ),
+    channels: t.readonly(t.record(ChannelKey, Channel)),
+    oldChannels: t.readonly(t.record(t.string, Channel)),
     tokens: t.readonly(t.record(t.string /* token: Address */, Address)),
     transport: t.readonly(
       t.partial({
-        matrix: t.readonly(
-          t.intersection([
-            t.type({
-              server: t.string,
-            }),
-            t.partial({
-              setup: RaidenMatrixSetup,
-              rooms: t.readonly(t.record(t.string /* partner: Address */, t.array(t.string))),
-            }),
-          ]),
-        ),
+        server: t.string,
+        setup: RaidenMatrixSetup,
+        rooms: t.readonly(t.record(t.string /* partner: Address */, t.array(t.string))),
       }),
     ),
     sent: TransfersState,
-    path: t.type({
-      iou: t.readonly(
-        t.record(
-          t.string /* tokenNetwork: Address */,
-          t.record(t.string /* service: Address */, Signed(IOU)),
-        ),
+    received: TransfersState,
+    iou: t.readonly(
+      t.record(
+        t.string /* tokenNetwork: Address */,
+        t.record(t.string /* service: Address */, Signed(IOU)),
       ),
-    }),
+    ),
     pendingTxs: t.readonlyArray(ConfirmableAction),
   }),
 );
@@ -92,6 +79,8 @@ export function encodeRaidenState(state: RaidenState): string {
  * 'number'. The data may be migrated from previous versions, then validated as current RaidenState
  *
  * @param data - string | any which may be decoded as RaidenState
+ * @param deps - Options
+ * @param deps.log - Logger instance
  * @returns RaidenState parsed, migrated and validated
  */
 export function decodeRaidenState(
@@ -99,7 +88,7 @@ export function decodeRaidenState(
   { log }: { log: logging.Logger } = { log: logging },
 ): RaidenState {
   if (typeof data === 'string') data = losslessParse(data);
-  const state = migrateState(data, { log });
+  const state = migrateState(data, CURRENT_STATE_VERSION, { log });
   // validates and returns as current state
   try {
     return decode(RaidenState, state);
@@ -118,6 +107,7 @@ type PartialState = { config?: PartialRaidenConfig } & Omit<Partial<RaidenState>
  * @param obj - Object containing common parameters for state
  * @param obj.network - ether's Network object for the current blockchain
  * @param obj.address - current account's address
+ * @param obj.contractsInfo - ContractsInfo mapping
  * @param overwrites - A partial object to overwrite top-level properties of the returned config
  * @returns A full config object
  */
@@ -137,12 +127,12 @@ export function makeInitialState(
     blockNumber: contractsInfo.TokenNetworkRegistry.block_number,
     config: overwrites.config ?? {},
     channels: {},
+    oldChannels: {},
     tokens: {},
     transport: {},
     sent: {},
-    path: {
-      iou: {},
-    },
+    received: {},
+    iou: {},
     pendingTxs: [],
   };
 }
@@ -159,6 +149,7 @@ export const initialState = makeInitialState({
     ServiceRegistry: { address: AddressZero as Address, block_number: 0 },
     UserDeposit: { address: AddressZero as Address, block_number: 0 },
     SecretRegistry: { address: AddressZero as Address, block_number: 0 },
+    MonitoringService: { address: AddressZero as Address, block_number: 0 },
   },
 });
 

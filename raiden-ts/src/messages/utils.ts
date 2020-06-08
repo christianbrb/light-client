@@ -2,12 +2,13 @@ import * as t from 'io-ts';
 import { Signer } from 'ethers/abstract-signer';
 import { keccak256, RLP, verifyMessage } from 'ethers/utils';
 import { arrayify, concat, hexlify } from 'ethers/utils/bytes';
+import { encode as rlpEncode } from 'ethers/utils/rlp';
 import { HashZero } from 'ethers/constants';
 import logging from 'loglevel';
 
 import { Address, Hash, HexString, Signature, UInt, Signed, decode, assert } from '../utils/types';
 import { encode, losslessParse, losslessStringify } from '../utils/data';
-import { SignedBalanceProof } from '../channels/types';
+import { BalanceProof } from '../channels/types';
 import { EnvelopeMessage, Message, MessageType, Metadata } from './types';
 import { messageReceived } from './actions';
 
@@ -24,13 +25,18 @@ const CMDIDs: { readonly [T in MessageType]: number } = {
   [MessageType.WITHDRAW_CONFIRMATION]: 16,
   [MessageType.WITHDRAW_EXPIRED]: 17,
   [MessageType.PFS_CAPACITY_UPDATE]: -1,
+  [MessageType.PFS_FEE_UPDATE]: -1,
+  [MessageType.MONITOR_REQUEST]: -1,
 };
 
 // raiden_contracts.constants.MessageTypeId
 export enum MessageTypeId {
   BALANCE_PROOF = 1,
+  BALANCE_PROOF_UPDATE = 2,
   WITHDRAW = 3,
+  COOP_SETTLE = 4,
   IOU = 5,
+  MS_REWARD = 6,
 }
 
 /**
@@ -40,7 +46,7 @@ export enum MessageTypeId {
  * @returns Hash of the metadata.
  */
 export function createMetadataHash(metadata: Metadata): Hash {
-  const routeHashes = metadata.routes.map(value => keccak256(RLP.encode(value.route)) as Hash);
+  const routeHashes = metadata.routes.map((value) => keccak256(RLP.encode(value.route)) as Hash);
   return keccak256(RLP.encode(routeHashes)) as Hash;
 }
 
@@ -65,7 +71,7 @@ export function createBalanceHash(
 }
 
 /**
- * Create the messageHash for a given EnvelopeMessage
+ * Create the messageHash/additionalHash for a given EnvelopeMessage
  *
  * @param message - EnvelopeMessage to pack
  * @returns Hash of the message pack
@@ -144,7 +150,7 @@ export function packMessage(message: Message) {
     case MessageType.REFUND_TRANSFER:
     case MessageType.UNLOCK:
     case MessageType.LOCK_EXPIRED: {
-      const messageHash = createMessageHash(message),
+      const additionalHash = createMessageHash(message),
         balanceHash = createBalanceHash(
           message.transferred_amount,
           message.locked_amount,
@@ -158,7 +164,7 @@ export function packMessage(message: Message) {
           encode(message.channel_identifier, 32),
           encode(balanceHash, 32), // balance hash
           encode(message.nonce, 32),
-          encode(messageHash, 32), // additional hash
+          encode(additionalHash, 32),
         ]),
       ) as HexString<212>;
     }
@@ -227,6 +233,32 @@ export function packMessage(message: Message) {
           encode(message.reveal_timeout, 32),
         ]),
       ) as HexString<236>;
+    case MessageType.PFS_FEE_UPDATE:
+      return hexlify(
+        concat([
+          encode(message.canonical_identifier.chain_identifier, 32),
+          encode(message.canonical_identifier.token_network_address, 20),
+          encode(message.canonical_identifier.channel_identifier, 32),
+          encode(message.updating_participant, 20),
+          encode(message.fee_schedule.cap_fees, 1),
+          encode(message.fee_schedule.flat, 32),
+          encode(message.fee_schedule.proportional, 32),
+          rlpEncode(message.fee_schedule.imbalance_penalty ?? '0x'),
+          encode(message.timestamp, 19),
+        ]),
+      ) as HexString; // variable size of fee_schedule.imbalance_penalty rlpEncoding, when not null
+    case MessageType.MONITOR_REQUEST:
+      return hexlify(
+        concat([
+          encode(message.monitoring_service_contract_address, 20),
+          encode(message.balance_proof.chain_id, 32),
+          encode(MessageTypeId.MS_REWARD, 32),
+          encode(message.balance_proof.token_network_address, 20),
+          encode(message.non_closing_participant, 20),
+          encode(message.non_closing_signature, 65),
+          encode(message.reward_amount, 32),
+        ]),
+      ) as HexString<221>;
   }
 }
 
@@ -253,14 +285,14 @@ export function getMessageSigner(message: Signed<Message>): Address {
 }
 
 /**
- * Get the SignedBalanceProof associated with an EnvelopeMessage
+ * Get the signed BalanceProof associated with an EnvelopeMessage
  *
  * @param message - Signed EnvelopeMessage
- * @returns SignedBalanceProof object for message
+ * @returns Signed BalanceProof object for message
  */
 export function getBalanceProofFromEnvelopeMessage(
   message: Signed<EnvelopeMessage>,
-): SignedBalanceProof {
+): Signed<BalanceProof> {
   return {
     chainId: message.chain_id,
     tokenNetworkAddress: message.token_network_address,
@@ -269,9 +301,8 @@ export function getBalanceProofFromEnvelopeMessage(
     transferredAmount: message.transferred_amount,
     lockedAmount: message.locked_amount,
     locksroot: message.locksroot,
-    messageHash: createMessageHash(message),
+    additionalHash: createMessageHash(message),
     signature: message.signature,
-    sender: getMessageSigner(message),
   };
 }
 
@@ -300,7 +331,7 @@ export function decodeJsonMessage(text: string): Message | Signed<Message> {
     parsed &&
       typeof parsed === 'object' &&
       'type' in parsed &&
-      Object.values(MessageType).some(t => t === parsed['type']),
+      Object.values(MessageType).some((t) => t === parsed['type']),
     `Invalid message type: ${parsed?.['type']}`,
   );
   if ('signature' in parsed) return decode(Signed(Message), parsed);
@@ -312,6 +343,8 @@ export function decodeJsonMessage(text: string): Message | Signed<Message> {
  *
  * @param signer - Signer instance
  * @param message - Unsigned message to pack and sign
+ * @param opts - Options
+ * @param opts.log - Logger instance
  * @returns Promise to signed message
  */
 export async function signMessage<M extends Message>(
@@ -338,10 +371,16 @@ export type messageReceivedTyped<M extends Message> = messageReceived & {
  * @param messageCodecs - Message codec to test action.payload.message against
  * @returns Typeguard intersecting messageReceived action and payload.message schemas
  */
-export function isMessageReceivedOfType<C extends t.Mixed>(messageCodecs: C | [C, C, ...C[]]) {
+export function isMessageReceivedOfType<C extends t.Mixed>(messageCodecs: C | C[]) {
+  /**
+   * Typeguard function
+   *
+   * @param action - Some action to guard to be a messageReceved
+   * @returns Whether or not action is a messageReceved of given type
+   */
   return (action: unknown): action is messageReceivedTyped<t.TypeOf<C>> =>
     messageReceived.is(action) &&
     (Array.isArray(messageCodecs)
-      ? t.union(messageCodecs).is(action.payload.message)
+      ? messageCodecs.some((c) => c.is(action.payload.message))
       : messageCodecs.is(action.payload.message));
 }

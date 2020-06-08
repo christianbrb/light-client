@@ -3,39 +3,29 @@ import { Wallet } from 'ethers/wallet';
 import { Contract, ContractReceipt, ContractTransaction } from 'ethers/contract';
 import { Network, toUtf8Bytes, sha256 } from 'ethers/utils';
 import { JsonRpcProvider } from 'ethers/providers';
-import { Observable, from, defer } from 'rxjs';
-import {
-  filter,
-  map,
-  scan,
-  concatMap,
-  pluck,
-  withLatestFrom,
-  first,
-  exhaustMap,
-} from 'rxjs/operators';
-import pick from 'lodash/pick';
-import transform from 'lodash/transform';
-import findKey from 'lodash/findKey';
+import { Observable, defer } from 'rxjs';
+import { filter, map, pluck, withLatestFrom, first, exhaustMap, mergeMap } from 'rxjs/operators';
 import logging from 'loglevel';
 
 import { RaidenState } from './state';
 import { ContractsInfo, RaidenEpicDeps } from './types';
-import { raidenSentTransfer } from './transfers/utils';
-import { TransferState, TransfersState, RaidenTransfer } from './transfers/state';
+import { raidenTransfer } from './transfers/utils';
+import { RaidenTransfer } from './transfers/state';
 import { channelAmounts } from './channels/utils';
-import { RaidenChannels, RaidenChannel, Channel } from './channels/state';
-import { pluckDistinct } from './utils/rx';
+import { RaidenChannels, RaidenChannel } from './channels/state';
+import { pluckDistinct, distinctRecordValues } from './utils/rx';
 import { Address, PrivateKey, isntNil, Hash, assert } from './utils/types';
 import { getNetworkName } from './utils/ethers';
+import { RaidenError, ErrorCodes } from './utils/error';
 
 import ropstenDeploy from './deployment/deployment_ropsten.json';
 import rinkebyDeploy from './deployment/deployment_rinkeby.json';
 import goerliDeploy from './deployment/deployment_goerli.json';
+import mainnetDeploy from './deployment/deployment_mainnet.json';
 import ropstenServicesDeploy from './deployment/deployment_services_ropsten.json';
 import rinkebyServicesDeploy from './deployment/deployment_services_rinkeby.json';
 import goerliServicesDeploy from './deployment/deployment_services_goerli.json';
-import { RaidenError, ErrorCodes } from './utils/error';
+import mainnetServicesDeploy from './deployment/deployment_services_mainnet.json';
 
 /**
  * Returns contract information depending on the passed [[Network]]. Currently, only
@@ -61,6 +51,11 @@ export const getContracts = (network: Network): ContractsInfo => {
       return ({
         ...goerliDeploy.contracts,
         ...goerliServicesDeploy.contracts,
+      } as unknown) as ContractsInfo;
+    case 'homestead':
+      return ({
+        ...mainnetDeploy.contracts,
+        ...mainnetServicesDeploy.contracts,
       } as unknown) as ContractsInfo;
     default:
       throw new RaidenError(ErrorCodes.RDN_UNRECOGNIZED_NETWORK, { network: network.name });
@@ -160,86 +155,60 @@ export const getSigner = async (
  */
 export const initTransfers$ = (state$: Observable<RaidenState>): Observable<RaidenTransfer> =>
   state$.pipe(
-    pluckDistinct('sent'),
-    concatMap(sent => from(Object.entries(sent))),
-    /* this scan stores a reference to each [key,value] in 'acc', and emit as 'changed' iff it
-     * changes from last time seen. It relies on value references changing only if needed */
-    scan<[string, TransferState], { acc: TransfersState; changed?: TransferState }>(
-      ({ acc }, [secrethash, sent]) =>
-        // if ref didn't change, emit previous accumulator, without 'changed' value
-        acc[secrethash] === sent
-          ? { acc }
-          : // else, update ref in 'acc' and emit value in 'changed' prop
-            { acc: { ...acc, [secrethash]: sent }, changed: sent },
-      { acc: {} },
-    ),
-    pluck('changed'),
-    filter(isntNil), // filter out if reference didn't change from last emit
+    mergeMap(function* ({ sent, received }) {
+      yield sent;
+      yield received;
+    }),
+    distinctRecordValues(),
+    pluck(1), // pluck values
     // from here, we get TransferState objects which changed from previous state (all on first)
-    map(raidenSentTransfer),
-  );
-
-/**
- * Returns an object that maps partner addresses to their [[RaidenChannel]].
- *
- * @param partnerChannelMap - an object that maps partnerAddress to a channel
- * @param token - a token address
- * @param tokenNetwork - a token network
- * @returns raiden channel
- */
-const mapPartnerToChannel = (
-  partnerChannelMap: {
-    [partner: string]: Channel;
-  },
-  token: Address,
-  tokenNetwork: string,
-): { [partner: string]: RaidenChannel } =>
-  transform(
-    // transform Channel to RaidenChannel, with more info
-    partnerChannelMap,
-    (partner2raidenChannel, channel, partner) => {
-      const {
-        ownDeposit,
-        partnerDeposit,
-        ownBalance: balance,
-        ownCapacity: capacity,
-      } = channelAmounts(channel);
-
-      partner2raidenChannel[partner] = {
-        state: channel.state,
-        ...pick(channel, ['id', 'settleTimeout', 'openBlock', 'closeBlock']),
-        token,
-        tokenNetwork: tokenNetwork as Address,
-        partner: partner as Address,
-        ownDeposit,
-        partnerDeposit,
-        balance,
-        capacity,
-      };
-    },
+    map(raidenTransfer),
   );
 
 /**
  * Transforms the redux channel state to [[RaidenChannels]]
  *
- * @param state - current state
- * @returns raiden channels
+ * @param channels - RaidenState.channels
+ * @returns Raiden public channels mapping
  */
-export const mapTokenToPartner = (state: RaidenState): RaidenChannels =>
-  transform(
-    // transform state.channels to token-partner-raidenChannel map
-    state.channels,
-    (result: RaidenChannels, partnerChannelMap, tokenNetwork) => {
-      const token = findKey(state.tokens, tn => tn === tokenNetwork) as Address | undefined;
-      if (!token) return; // shouldn't happen, token mapping is always bi-directional
-      result[token] = mapPartnerToChannel(partnerChannelMap, token, tokenNetwork);
-    },
-  );
+export const mapRaidenChannels = (channels: RaidenState['channels']): RaidenChannels =>
+  Object.values(channels).reduce((acc, channel) => {
+    const {
+      ownDeposit,
+      partnerDeposit,
+      ownBalance: balance,
+      ownCapacity: capacity,
+    } = channelAmounts(channel);
+    const raidenChannel: RaidenChannel = {
+      state: channel.state,
+      id: channel.id,
+      token: channel.token,
+      tokenNetwork: channel.tokenNetwork,
+      settleTimeout: channel.settleTimeout,
+      openBlock: channel.openBlock,
+      closeBlock: 'closeBlock' in channel ? channel.closeBlock : undefined,
+      partner: channel.partner.address,
+      ownDeposit,
+      partnerDeposit,
+      balance,
+      capacity,
+    };
+    return {
+      ...acc,
+      [channel.token]: {
+        ...acc[channel.token],
+        [channel.partner.address]: raidenChannel,
+      },
+    };
+  }, {} as { [token: string]: { [partner: string]: RaidenChannel } });
 
 /**
  * Return signer & address to use for on-chain txs depending on subkey param
  *
  * @param deps - RaidenEpicDeps subset
+ * @param deps.signer - Signer instance
+ * @param deps.address - Own address
+ * @param deps.main - Main signer/address, if any
  * @param subkey - Whether to prefer the subkey or the main key
  * @returns Signer & Address to use for on-chain operations
  */
@@ -278,6 +247,8 @@ export function getContractWithSigner<C extends Contract>(contract: C, signer: S
  * @param method - Method name
  * @param params - Params tuple to method
  * @param errorCode - ErrorCode to throw in case of failure
+ * @param opts - Options
+ * @param opts.log - Logger instance
  * @returns Promise to successful receipt
  */
 export async function callAndWaitMined<
@@ -320,6 +291,9 @@ export async function callAndWaitMined<
  *
  * @param receipt - Receipt to wait for confirmation
  * @param deps - RaidenEpicDeps
+ * @param deps.latest$ - Latest observable
+ * @param deps.config$ - Config observable
+ * @param deps.provider - Eth provider
  * @param confBlocks - Overwrites config
  * @returns Promise final block of transaction
  */
@@ -340,7 +314,7 @@ export async function waitConfirmation(
       ),
       exhaustMap(([blockNumber, { confirmationBlocks }]) =>
         defer(() => provider.getTransactionReceipt(txHash)).pipe(
-          map(receipt => {
+          map((receipt) => {
             if (
               receipt?.confirmations &&
               receipt.confirmations >= (confBlocks ?? confirmationBlocks)
@@ -357,3 +331,18 @@ export async function waitConfirmation(
     )
     .toPromise();
 }
+
+/*
+ * Returns true if `url` is a valid URL or domain.
+ * On production `https://` is required for URLs, otherwise `http://` matches as well.
+ *
+ * @param url - A URL or hostname
+ * @returns true if valid URL or domain
+ */
+export const isValidUrl = (url: string): boolean => {
+  const regex =
+    process.env.NODE_ENV === 'production'
+      ? /^(?:https:\/\/)?[^\s\/$.?#&"']+\.[^\s\/$?#&"']+$/
+      : /^(?:(http|https):\/\/)?([^\s\/$.?#&"']+\.)*[^\s\/$?#&"']+(?:(\d+))*$/;
+  return regex.test(url);
+};

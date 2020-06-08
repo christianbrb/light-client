@@ -1,4 +1,21 @@
 {
+  "home": {
+    "title": "Raiden dApp",
+    "welcome": "Welcome to the Raiden dApp",
+    "connect-button": "Connect",
+    "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can only be used on Ethereum testnets.",
+    "getting-started": {
+      "description": "Read the {0} for detailed information on how to use the Raiden dApp.",
+      "link-name": "getting started guide"
+    },
+    "connect-dialog": {
+      "title": "Connect",
+      "raiden-account": "Generate Account & Key",
+      "description-raiden-account": "A Raiden Account will be generated.",
+      "description-web3-account": "You can use your Web3 account directly by enabling it in the settings menu.",
+      "no-provider": "No Web3 provider detected, please install e.g. MetaMask."
+    }
+  },
   "general": {
     "buttons": {
       "cancel": "Cancel",
@@ -6,23 +23,77 @@
       "continue": "Continue",
       "confirm": "Confirm"
     },
-    "offline": "Please connect to the internet."
+    "offline": "Please connect to the internet.",
+    "raiden-account": "Raiden Account",
+    "main-account": "Main Account"
   },
-  "general-menu": {
+  "account-content": {
     "account-details": "Account Details",
     "address": "Address:",
     "currency": "ETH:",
     "menu-items": {
-      "backup-state-title": "Backup state",
-      "backup-state-subtitle": "Download & upload your state"
+      "settings": {
+        "title": "Settings",
+        "subtitle": "Change how you interact with the dApp"
+      },
+      "backup-state": {
+        "title": "Backup state",
+        "subtitle": "Download & upload your state"
+      },
+      "report-bugs": {
+        "title": "Report bugs",
+        "subtitle": "Download logs"
+      },
+      "raiden-account": {
+        "title": "Raiden Account",
+        "subtitle": "Transfer ETH between your main and Raiden account"
+      },
+      "withdrawal": {
+        "title": "Withdrawal",
+        "subtitle": "Withdraw tokens to your main account"
+      },
+      "udc": {
+        "title": "UDC",
+        "subtitle": "Manage User Deposit Contract funds"
+      }
     }
   },
+  "withdrawal": {
+    "title": "Transfer token amount back to your main account.",
+    "dialog": {
+      "title": "Withdraw {0}",
+      "body": "You are about to withdraw {0} from your Raiden account.",
+      "progress": "Withdrawing...",
+      "button": "Confirm",
+      "no-eth": "Your Raiden account does not have sufficient ETH to withdraw."
+    },
+    "blockie-alt": "Token address blockie",
+    "no-tokens": "The Raiden account has no tokens"
+  },
+  "udc": {
+    "description": "Your UDC (User Deposit Contract) contains utility tokens for your current account. The tokens are used to pay for services such as pathfinding and monitoring.",
+    "deposit": "Deposit",
+    "mint-deposit": "Mint and deposit",
+    "balance": "UDC Balance:",
+    "balance-too-low": "Your {symbol} balance is too low to pay for the Monitoring Service. Receiving transfers has been temporarily disabled. Use the button above to mint an deposit more tokens. A minimum amount of 5 {service} is needed to enable receiving."
+  },
   "backup-state": {
-    "description": "Currently it is only possible to download the state. Uploading of state coming soon.",
+    "description": "The state holds all account information except the private key. You can backup your state to make sure the dApp is kept in sync when switching between browsers.",
+    "disabled-download": "Downloading the state is only possible when connected to the dApp",
+    "disabled-upload": "Uploading the state is only possible when the dApp is disconnected",
     "download": "Download State",
     "download-warning": "Downloading the state will force the dApp to shut down",
     "download-button": "Download",
-    "upload": "Upload State"
+    "upload": "Upload State",
+    "upload-drag-and-drop": "Drag and drop state file",
+    "upload-divider": "or",
+    "upload-button": "Browse files",
+    "upload-error": "Only one state file in valid JSON format can be uploaded"
+  },
+  "raiden-account": {
+    "in-progress": "Transfer in progress",
+    "transfer-from-main-account": "Transfer ETH from Main Account to Raiden Account",
+    "transfer-from-raiden-account": "Transfer ETH from Raiden Account to Main Account"
   },
   "update": {
     "available": "A new version is available.",
@@ -30,13 +101,13 @@
   },
   "address-input": {
     "input": {
-      "placeholder": "Enter an address or ENS name..."
+      "placeholder": "Address / ENS name"
     },
     "blockie-alt": "Selected token address blockie",
     "error": {
-      "invalid-address": "Please enter a valid address or ENS name",
+      "invalid-address": "Enter a valid address or ENS name",
       "no-checksum": "Please enter an address in checksum format. You can convert your address on https://ethsum.netlify.com",
-      "empty": "Please enter an address or ENS name",
+      "empty": "Enter an address or ENS name",
       "ens-resolve-failed": "Please enter a resolvable ENS name",
       "invalid-excluded-address": "Please enter a different address or ENS name. You can't use your own address or the address of the token network.",
       "channel-not-open": "Please enter a hub address you have an open channel with.",
@@ -51,7 +122,7 @@
       "empty": "Please enter an amount",
       "too-many-decimals": "Please use only up to {decimals} decimals for this token",
       "not-enough-funds": "Your maximum usable amount is {funds} {symbol}",
-      "zero": "Please enter an amount larger than zero",
+      "zero": "Enter an amount larger than zero",
       "invalid": "Please enter a valid amount"
     }
   },
@@ -110,7 +181,9 @@
     "settleable": {
       "header": "Settleable"
     },
-    "snackbar-close": "Close"
+    "snackbar-close": "Close",
+    "token-info": "{symbol} | {name}",
+    "title": "Channels on"
   },
   "channel-list": {
     "channel": {
@@ -159,26 +232,8 @@
   "no-access": {
     "unsupported-network": "The current network is unsupported. Please choose a different network.",
     "sdk-initialization-failure": "SDK initialization failed. Please check the console for more information.",
+    "rdn-state-migration": "Cannot replace state with older uploaded state.",
     "generic-error": "A valid account could not be detected. Please make sure that your provider is unlocked and accessible."
-  },
-  "splash-screen": {
-    "connect": {
-      "divider": "-OR-",
-      "web3-provider": "Connect using your Web3 provider account.",
-      "raiden-account": {
-        "description": "Connect to Web3 and re-generate a {0}",
-        "link-name": "dedicated Raiden account."
-      }
-    },
-    "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can only be used on Ethereum testnets.",
-    "matrix-sign": "On the first launch you get asked to sign two messages to connect to the Raiden transport layer. You sign the matrix server name and the public user name.",
-    "getting-started": {
-      "description": "Read the {0} for detailed information on how to use the Raiden dApp.",
-      "link-name": "getting started guide"
-    },
-    "connect-button": "Connect",
-    "no-provider": "No Web3 provider detected, please install e.g. MetaMask.",
-    "download-logs": "Download stored Raiden logs"
   },
   "tokens": {
     "connected": {
@@ -211,10 +266,12 @@
   "application": {
     "privacy-policy": "Privacy Policy, Disclaimer & Imprint"
   },
-  "mint-deposit-dialog": {
+  "udc-deposit-dialog": {
     "button": "Mint and deposit",
+    "button-main": "Deposit",
     "available": "Available {currency} to pay for on-chain transaction: {balance} {currency}",
     "error": "The mint and deposit operation failed.",
+    "error-main": "The deposit operation failed.",
     "progress": {
       "mint": "Minting {currency} tokens",
       "approve": "Allow UDC to access {currency} tokens",
@@ -222,12 +279,13 @@
     }
   },
   "transfer": {
+    "transfer-title": "Make Transfer",
     "deposit-button": "Deposit",
     "channel-button": "Channels",
     "capacity-label": "Capacity",
     "recipient-label": "Recipient",
     "amount-label": "Amount",
-    "amount-placeholder": "Specify amount...",
+    "amount-placeholder": "Amount",
     "error": {
       "button": "Dismiss",
       "title": "Token transfer unsuccessful",
@@ -237,9 +295,10 @@
       "request-route": {
         "title": "Request Route",
         "tooltip": "Mint and deposit {token} to the User Deposit Contract to pay for PFS requests",
+        "tooltip-main": "Deposit {token} to the User Deposit Contract to pay for PFS requests",
         "udc-description": "Balance to pay the Pathfinding Service",
-        "udc-description-low-balance": "Your {token} token balance is to low to pay for the Pathfinding Service. Use the button above to mint and deposit more tokens.",
-        "in-progress": "Sign the message to pay for the route request",
+        "udc-description-low-balance": "Your {token} token balance is too low to pay for the Pathfinding Service. Use the button above to mint and deposit more tokens.",
+        "in-progress": "Paying for the route request",
         "searching-for-route": "Searching for route...",
         "done": "Route request payment complete"
       },
@@ -269,7 +328,7 @@
       },
       "done": {
         "title": "Send Successful",
-        "description": "Your transfer was successful. You may get prompted to sign additional messages in order to acknowledge delivered messages from the target."
+        "description": "Your transfer was successful."
       },
       "deposit": {
         "label": "Deposit",
@@ -301,6 +360,16 @@
       }
     }
   },
+  "transfer-history": {
+    "title": "Transfer History",
+    "sent-title": "Sent to",
+    "sent-symbol": "-",
+    "received-title": "Received from",
+    "received-symbol": "+",
+    "pending-transfer": "PENDING",
+    "successful-transfer": "CONFIRMED",
+    "failed-transfer": "FAILED"
+  },
   "select-token": {
     "header": "Available",
     "tokens": {
@@ -311,7 +380,11 @@
     }
   },
   "select-hub": {
-    "select-button": "Select Hub"
+    "select-button": "Select Hub",
+    "service-token-tooltip": "Mint and deposit {token} to the User Deposit Contract to pay for the Monitoring Service.",
+    "service-token-tooltip-main": "Deposit {token} to the User Deposit Contract to pay for the Monitoring Service.",
+    "service-token-balance-too-low": "Your {token} balance is too low to pay for the Monitoring Service. Use the button above to mint and deposit more tokens.",
+    "service-token-description": "Balance to pay the Monitoring Service"
   },
   "open-channel": {
     "error": {
@@ -362,17 +435,27 @@
   },
   "mint-dialog": {
     "title": "Mint {symbol}",
-    "description": "If you continue, you will get prompted by MetaMask to sign off a minting transction. In order to mint tokens, you need test net ETH in your wallet."
+    "description": "If you continue, you will get prompted by MetaMask to sign off a minting transaction. In order to mint tokens, you need test net ETH in your wallet."
   },
   "error-message": {
     "problem": "Problem:",
     "solution": "Solution:"
   },
+  "receiving-disabled-dialog": {
+    "title": "Receiving transfers is disabled",
+    "body": "This may be due to configuration or UDC deposit being too low. If your client can receive, ensure you have enough UDC balance to pay for Monitoring Service (on Account menu) to enable receiving again."
+  },
   "errors": {
     "RDN_GENERAL_ERROR": {
-      "title": "An error occured",
+      "title": "An error occurred",
       "problem": "We do not know this error, sorry.",
-      "solution": "Please file a new issue on https://github.com/raiden-network/light-client."
+      "solution": [
+        "Please help us and report the issue",
+        "Click on your identicon in the top right corner",
+        "Click on Report Bugs / Download logs",
+        "File a new issue on https://github.com/raiden-network/light-client",
+        "Upload logs to the issue"
+      ]
     },
     "RDN_MINT_FAILED": {
       "title": "Could not mint token",
@@ -383,10 +466,10 @@
       "title": "No open channels",
       "problem": "You don't seem to have open channels on this token network.",
       "solution": [
-        "Hit the ← button in the top left", 
-        "Click on the current token network", 
-        "Select Connect new token", 
-        "Select the token you want to transfer", 
+        "Hit the ← button in the top left",
+        "Click on the current token network",
+        "Select Connect new token",
+        "Select the token you want to transfer",
         "Proceed with the flow to open a new channel"
       ]
     },
@@ -396,7 +479,11 @@
       "solution": [
         "Update the dApp by reloading the page",
         "Attempt a new transfer",
-        "If the problem persists, please file a new issue on https://github.com/raiden-network/light-client"
+        "If the problem persists, please help us and report the issue",
+        "Click on your identicon in the top right corner",
+        "Click on Report Bugs / Download logs",
+        "File a new issue on https://github.com/raiden-network/light-client",
+        "Upload logs to the issue"
       ]
     },
     "PFS_NO_ROUTES_FOUND": {
@@ -410,10 +497,10 @@
       "solution": [
         "Simply retry your last action",
         "If the problem persists, please help us and report the issue",
-        "Right click > Inspect or Inspect Element", 
-        "Go to Console", 
-        "Copy errors that occurred", 
-        "File a new issue on https://github.com/raiden-network/light-client"
+        "Click on your identicon in the top right corner",
+        "Click on Report Bugs / Download logs",
+        "File a new issue on https://github.com/raiden-network/light-client",
+        "Upload logs to the issue"
       ]
     },
     "PFS_DISABLED": {
@@ -429,12 +516,38 @@
     "PFS_LAST_IOU_REQUEST_FAILED": {
       "title": "Error while depositing tokens for Pathfinding Service",
       "problem": "While trying to deposit tokens for route requests, the Pathfinding Service returned an error.",
-      "solution": "This should happen very rarely, please retry to deposit. If the problem persists, please file an issue on https://github.com/raiden-network/light-client."
+      "solution": [
+        "This should happen very rarely, please retry to deposit",
+        "If the problem persists, please help us and report the issue",
+        "Click on your identicon in the top right corner",
+        "Click on Report Bugs / Download logs",
+        "File a new issue on https://github.com/raiden-network/light-client",
+        "Upload logs to the issue"
+      ]
     },
     "PFS_IOU_SIGNATURE_MISMATCH": {
       "title": "Error while depositing tokens for Pathfinding Service",
       "problem": "While trying to deposit tokens for route requests, the Pathfinding Service encountered mismatching signatures.",
-      "solution": "This should happen very rarely, please retry to deposit. If the problem persists, please file an issue on https://github.com/raiden-network/light-client."
+      "solution": [
+        "This should happen very rarely, please retry to deposit",
+        "If the problem persists, please help us and report the issue",
+        "Click on your identicon in the top right corner",
+        "Click on Report Bugs / Download logs",
+        "File a new issue on https://github.com/raiden-network/light-client",
+        "Upload logs to the issue"
+      ]
+    },
+    "PFS_NO_ROUTES_BETWEEN_NODES": {
+      "title": "No route between you and your target",
+      "problem": "The Pathfinding Service was not able to find a usable route between you and the target you want to transfer tokens to.",
+      "solution": [
+        "Hit the ← button in the top left",
+        "Click on the current token network",
+        "Select Connect new token",
+        "Select the token you want to transfer",
+        "Connect with a more popular hub, e.g. hub.raiden.eth. That way, Pathfinding Service is more likely to find a route between you and the target",
+        "Retry your transfer"
+      ]
     }
   },
   "versions": {
@@ -445,6 +558,27 @@
     "permission": {
       "title": "Grant Camera Access",
       "description": "In order to scan QR codes, you will need to allow camera access."
+    }
+  },
+  "progress-steps": {
+    "transfer": {
+      "PENDING": "Transfer sent",
+      "RECEIVED": "Transfer acknowledged by partner",
+      "REFUNDED": "Transfer refunded",
+      "CLOSED": "Channel closed early",
+      "REVEALED": "Secret revealed to target",
+      "UNLOCKING": "Unlock sent to partner",
+      "EXPIRING": "Lock expired",
+      "UNLOCKED": "Unlock acknowledged",
+      "EXPIRED": "Lock expired acknowledged",
+      "REQUESTED": "Secret requested by target",
+      "REGISTERED": "Secret registered on-chain"
+    }
+  },
+  "settings": {
+    "raiden-account": {
+      "title": "Use Raiden Account",
+      "description": "By default the dApp uses a generated Raiden account to sign messages. Disable the Raiden account to use your Web3 provider account. All messages will then have to be signed manually."
     }
   }
 }

@@ -2,6 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import { bigNumberify } from 'ethers/utils';
+import { Zero, AddressZero, HashZero } from 'ethers/constants';
 
 import { ChannelState } from 'raiden-ts/channels';
 import {
@@ -10,8 +11,9 @@ import {
   RaidenState,
   CURRENT_STATE_VERSION,
 } from 'raiden-ts/state';
-import { Address, UInt } from 'raiden-ts/utils/types';
+import { Address, UInt, Hash } from 'raiden-ts/utils/types';
 import { makeDefaultConfig } from 'raiden-ts/config';
+import { SignatureZero } from 'raiden-ts/constants';
 
 describe('RaidenState codecs', () => {
   const address = '0x1111111111111111111111111111111111111111' as Address,
@@ -30,22 +32,56 @@ describe('RaidenState codecs', () => {
       blockNumber: 123,
       config: makeDefaultConfig({ network: { name: 'testnet', chainId } }),
       channels: {
-        [tokenNetwork]: {
-          [partner]: {
-            state: ChannelState.open,
-            own: { deposit: bigNumberify(200) as UInt<32> },
-            partner: { deposit: bigNumberify(210) as UInt<32> },
-            id: 17,
-            settleTimeout: 500,
-            openBlock: 121,
-            isFirstParticipant: true,
+        [`${partner}@${tokenNetwork}`]: {
+          state: ChannelState.open,
+          own: {
+            address,
+            deposit: bigNumberify(200) as UInt<32>,
+            withdraw: Zero as UInt<32>,
+            locks: [],
+            balanceProof: {
+              chainId: Zero as UInt<32>,
+              tokenNetworkAddress: AddressZero as Address,
+              channelId: Zero as UInt<32>,
+              nonce: Zero as UInt<8>,
+              transferredAmount: Zero as UInt<32>,
+              lockedAmount: Zero as UInt<32>,
+              locksroot: HashZero as Hash,
+              additionalHash: HashZero as Hash,
+              signature: SignatureZero,
+            },
           },
+          partner: {
+            address: partner,
+            deposit: bigNumberify(210) as UInt<32>,
+            withdraw: Zero as UInt<32>,
+            locks: [],
+            balanceProof: {
+              chainId: Zero as UInt<32>,
+              tokenNetworkAddress: AddressZero as Address,
+              channelId: Zero as UInt<32>,
+              nonce: Zero as UInt<8>,
+              transferredAmount: Zero as UInt<32>,
+              lockedAmount: Zero as UInt<32>,
+              locksroot: HashZero as Hash,
+              additionalHash: HashZero as Hash,
+              signature: SignatureZero,
+            },
+          },
+          id: 17,
+          settleTimeout: 500,
+          openBlock: 121,
+          isFirstParticipant: true,
+          token,
+          tokenNetwork,
         },
       },
+      oldChannels: {},
       tokens: { [token]: tokenNetwork },
       transport: {},
       sent: {},
-      path: { iou: {} },
+      received: {},
+      iou: {},
       pendingTxs: [],
     };
     expect(JSON.parse(encodeRaidenState(state))).toEqual({
@@ -56,22 +92,56 @@ describe('RaidenState codecs', () => {
       blockNumber: 123,
       config: expect.anything(),
       channels: {
-        [tokenNetwork]: {
-          [partner]: {
-            state: 'open',
-            own: { deposit: '200' },
-            partner: { deposit: '210' },
-            id: 17,
-            settleTimeout: 500,
-            openBlock: 121,
-            isFirstParticipant: true,
+        [`${partner}@${tokenNetwork}`]: {
+          state: 'open',
+          own: {
+            address,
+            deposit: '200',
+            withdraw: '0',
+            locks: [],
+            balanceProof: {
+              chainId: '0',
+              tokenNetworkAddress: AddressZero,
+              channelId: '0',
+              nonce: '0',
+              transferredAmount: '0',
+              lockedAmount: '0',
+              locksroot: HashZero,
+              additionalHash: HashZero,
+              signature: SignatureZero,
+            },
           },
+          partner: {
+            address: partner,
+            deposit: '210',
+            withdraw: '0',
+            locks: [],
+            balanceProof: {
+              chainId: '0',
+              tokenNetworkAddress: AddressZero,
+              channelId: '0',
+              nonce: '0',
+              transferredAmount: '0',
+              lockedAmount: '0',
+              locksroot: HashZero,
+              additionalHash: HashZero,
+              signature: SignatureZero,
+            },
+          },
+          id: 17,
+          settleTimeout: 500,
+          openBlock: 121,
+          isFirstParticipant: true,
+          token,
+          tokenNetwork,
         },
       },
+      oldChannels: {},
       tokens: { [token]: tokenNetwork },
       transport: {},
       sent: {},
-      path: { iou: {} },
+      received: {},
+      iou: {},
       pendingTxs: [],
     });
   });
@@ -100,9 +170,11 @@ describe('RaidenState codecs', () => {
             },
           },
         },
+        oldChannels: {},
         tokens: {},
         transport: {},
         sent: {},
+        received: {},
         path: { iou: {} },
         pendingTxs: [],
       }),
@@ -112,28 +184,62 @@ describe('RaidenState codecs', () => {
     expect(
       decodeRaidenState({
         address,
-        // no version, expect migration to add it
+        version: CURRENT_STATE_VERSION,
         chainId,
         registry,
         blockNumber: 123,
         config: makeDefaultConfig({ network: { name: 'testnet', chainId } }),
         channels: {
-          [tokenNetwork]: {
-            [partner]: {
-              state: 'open',
-              own: { deposit: '200' },
-              partner: { deposit: '210' },
-              id: 17,
-              settleTimeout: 500,
-              openBlock: 121,
-              isFirstParticipant: true,
+          [`${partner}@${tokenNetwork}`]: {
+            state: 'open',
+            own: {
+              address,
+              deposit: '200',
+              withdraw: '0',
+              locks: [],
+              balanceProof: {
+                chainId: '0',
+                tokenNetworkAddress: AddressZero,
+                channelId: '0',
+                nonce: '0',
+                transferredAmount: '0',
+                lockedAmount: '0',
+                locksroot: HashZero,
+                additionalHash: HashZero,
+                signature: SignatureZero,
+              },
             },
+            partner: {
+              address: partner,
+              deposit: '210',
+              withdraw: '0',
+              locks: [],
+              balanceProof: {
+                chainId: '0',
+                tokenNetworkAddress: AddressZero,
+                channelId: '0',
+                nonce: '0',
+                transferredAmount: '0',
+                lockedAmount: '0',
+                locksroot: HashZero,
+                additionalHash: HashZero,
+                signature: SignatureZero,
+              },
+            },
+            id: 17,
+            settleTimeout: 500,
+            openBlock: 121,
+            isFirstParticipant: true,
+            token,
+            tokenNetwork,
           },
         },
+        oldChannels: {},
         tokens: { [token]: tokenNetwork },
         transport: {},
         sent: {},
-        path: { iou: {} },
+        received: {},
+        iou: {},
         pendingTxs: [],
       }),
     ).toEqual({
@@ -144,22 +250,56 @@ describe('RaidenState codecs', () => {
       blockNumber: 123,
       config: expect.anything(),
       channels: {
-        [tokenNetwork]: {
-          [partner]: {
-            state: ChannelState.open,
-            own: { deposit: bigNumberify(200) },
-            partner: { deposit: bigNumberify(210) },
-            id: 17,
-            settleTimeout: 500,
-            openBlock: 121,
-            isFirstParticipant: true,
+        [`${partner}@${tokenNetwork}`]: {
+          state: ChannelState.open,
+          own: {
+            address,
+            deposit: bigNumberify(200),
+            withdraw: Zero,
+            locks: [],
+            balanceProof: {
+              chainId: Zero,
+              tokenNetworkAddress: AddressZero,
+              channelId: Zero,
+              nonce: Zero,
+              transferredAmount: Zero,
+              lockedAmount: Zero,
+              locksroot: HashZero,
+              additionalHash: HashZero,
+              signature: SignatureZero,
+            },
           },
+          partner: {
+            address: partner,
+            deposit: bigNumberify(210),
+            withdraw: Zero,
+            locks: [],
+            balanceProof: {
+              chainId: Zero,
+              tokenNetworkAddress: AddressZero,
+              channelId: Zero,
+              nonce: Zero,
+              transferredAmount: Zero,
+              lockedAmount: Zero,
+              locksroot: HashZero,
+              additionalHash: HashZero,
+              signature: SignatureZero,
+            },
+          },
+          id: 17,
+          settleTimeout: 500,
+          openBlock: 121,
+          isFirstParticipant: true,
+          token,
+          tokenNetwork,
         },
       },
+      oldChannels: {},
       tokens: { [token]: tokenNetwork },
       transport: {},
       sent: {},
-      path: { iou: {} },
+      received: {},
+      iou: {},
       pendingTxs: [],
     });
   });

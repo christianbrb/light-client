@@ -83,7 +83,7 @@ export const BigNumberC = new t.Type<BigNumber, string>(
       return t.failure(u, c);
     }
   },
-  a => a.toString(),
+  (a) => a.toString(),
 );
 
 // sized brands interfaces must derive from this interface
@@ -105,7 +105,7 @@ export interface HexStringB<S extends number> extends SizedB<S> {
  */
 export const HexString: <S extends number = number>(
   size?: S,
-) => t.BrandC<t.StringC, HexStringB<S>> = memoize(function<S extends number = number>(size?: S) {
+) => t.BrandC<t.StringC, HexStringB<S>> = memoize(function <S extends number = number>(size?: S) {
   return t.brand(
     t.string,
     (n): n is string & t.Brand<HexStringB<S>> =>
@@ -131,7 +131,9 @@ export interface IntB<S extends number> extends SizedB<S> {
  */
 export const Int: <S extends number = number>(
   size?: S,
-) => t.BrandC<typeof BigNumberC, IntB<S>> = memoize(function<S extends number = number>(size?: S) {
+) => t.BrandC<typeof BigNumberC, IntB<S>> = memoize(function <S extends number = number>(
+  size?: S,
+) {
   const min = size ? Zero.sub(Two.pow(size * 8 - 1)) : undefined,
     max = size ? Two.pow(size * 8 - 1) : undefined;
   return t.brand(
@@ -157,7 +159,7 @@ export interface UIntB<S extends number> extends SizedB<S> {
  */
 export const UInt: <S extends number = number>(
   size?: S,
-) => t.BrandC<typeof BigNumberC, UIntB<S>> = memoize(function<S extends number = number>(
+) => t.BrandC<typeof BigNumberC, UIntB<S>> = memoize(function <S extends number = number>(
   size?: S,
 ) {
   const min = size ? Zero : undefined,
@@ -260,3 +262,23 @@ export const Signed: <C extends t.Mixed>(
   t.intersection([codec, t.readonly(t.type({ signature: Signature }))]),
 );
 export type Signed<M> = M & { signature: Signature };
+
+export interface Newable {
+  new (...args: any[]): any;
+}
+
+/**
+ * Memoized factory to create codecs validating an arbitrary class C
+ *
+ * @param C - Class to create a codec for
+ * @returns Codec validating class C
+ */
+export const instanceOf: <C extends Newable>(C: C) => t.Type<InstanceType<C>> = memoize(
+  <C extends Newable>(C: C): t.Type<InstanceType<C>> =>
+    new t.Type<InstanceType<C>>(
+      `instanceOf(${C.name})`,
+      (v): v is InstanceType<C> => v instanceof C,
+      (i, c) => (i instanceof C ? t.success<InstanceType<C>>(i) : t.failure(i, c)),
+      t.identity,
+    ),
+);

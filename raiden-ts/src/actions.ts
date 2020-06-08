@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/class-name-casing */
 /**
  * Aggregate types and exported properties from actions from all modules
  */
@@ -13,10 +12,10 @@ import * as ChannelsActions from './channels/actions';
 import * as TransportActions from './transport/actions';
 import * as MessagesActions from './messages/actions';
 import * as TransfersActions from './transfers/actions';
-import * as PathFindActions from './path/actions';
+import * as ServicesActions from './services/actions';
 
 export const raidenShutdown = createAction(
-  'raidenShutdown',
+  'raiden/shutdown',
   t.type({
     reason: t.union([
       t.literal(ShutdownReason.STOP),
@@ -28,7 +27,7 @@ export const raidenShutdown = createAction(
 );
 export interface raidenShutdown extends ActionType<typeof raidenShutdown> {}
 
-export const raidenConfigUpdate = createAction('raidenConfigUpdate', PartialRaidenConfig);
+export const raidenConfigUpdate = createAction('raiden/config/update', PartialRaidenConfig);
 export interface raidenConfigUpdate extends ActionType<typeof raidenConfigUpdate> {}
 
 const RaidenActions = {
@@ -38,7 +37,7 @@ const RaidenActions = {
   ...TransportActions,
   ...MessagesActions,
   ...TransfersActions,
-  ...PathFindActions,
+  ...ServicesActions,
 };
 
 /* Tagged union of all action types from the action creators */
@@ -76,7 +75,7 @@ export const ConfirmableActions = [
   ChannelsActions.channelWithdrawn,
   ChannelsActions.channelClose.success,
   ChannelsActions.channelSettle.success,
-  TransfersActions.transferSecretRegistered,
+  TransfersActions.transferSecretRegister.success,
 ];
 /**
  * Union of codecs of actions above
@@ -87,7 +86,7 @@ export const ConfirmableAction = t.union([
   ChannelsActions.channelWithdrawn.codec,
   ChannelsActions.channelClose.success.codec,
   ChannelsActions.channelSettle.success.codec,
-  TransfersActions.transferSecretRegistered.codec,
+  TransfersActions.transferSecretRegister.success.codec,
 ]);
 export type ConfirmableAction =
   | ChannelsActions.channelOpen.success
@@ -95,4 +94,4 @@ export type ConfirmableAction =
   | ChannelsActions.channelWithdrawn
   | ChannelsActions.channelClose.success
   | ChannelsActions.channelSettle.success
-  | TransfersActions.transferSecretRegistered;
+  | TransfersActions.transferSecretRegister.success;

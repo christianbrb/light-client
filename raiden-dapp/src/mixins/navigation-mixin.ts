@@ -13,9 +13,11 @@ export default class NavigationMixin extends Vue {
   }
 
   navigateToHome() {
-    this.$router.push({
-      name: RouteNames.HOME
-    });
+    this.$router
+      .push({
+        name: RouteNames.HOME
+      })
+      .catch(() => {});
   }
 
   navigateToOpenChannel(token: string, partner: string) {
@@ -67,19 +69,49 @@ export default class NavigationMixin extends Vue {
     });
   }
 
-  navigateToGeneralHome() {
+  navigateToNotifications() {
     this.$router.push({
-      name: RouteNames.GENERAL_HOME
+      name: RouteNames.NOTIFICATIONS
+    });
+  }
+
+  navigateToAccoount() {
+    this.$router.push({
+      name: RouteNames.ACCOUNT_ROOT
     });
   }
 
   navigateToBackupState() {
     this.$router.push({
-      name: RouteNames.BACKUP_STATE
+      name: RouteNames.ACCOUNT_BACKUP
     });
   }
 
-  onGeneralBackClicked() {
+  navigateToRaidenAccountTransfer() {
+    this.$router.push({
+      name: RouteNames.ACCOUNT_RAIDEN
+    });
+  }
+
+  navigateToSettings() {
+    this.$router.push({
+      name: RouteNames.ACCOUNT_SETTINGS
+    });
+  }
+
+  navigateToWithdrawal() {
+    this.$router.push({
+      name: RouteNames.ACCOUNT_WITHDRAWAL
+    });
+  }
+
+  navigateToUDC() {
+    this.$router.push({
+      name: RouteNames.ACCOUNT_UDC
+    });
+  }
+
+  onModalBackClicked() {
     this.$router.go(-1);
   }
 

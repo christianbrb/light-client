@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-namespace */
-/* eslint-disable @typescript-eslint/class-name-casing */
 import * as t from 'io-ts';
 
 import { createAction, ActionType, createAsyncAction } from '../utils/actions';
 import { Address, Hash, UInt } from '../utils/types';
+import { Lock } from './types';
 
 // interfaces need to be exported, and we need/want to support `import * as RaidenActions`
 const ChannelId = t.type({
@@ -12,7 +12,7 @@ const ChannelId = t.type({
 });
 
 /* A new head in the blockchain is detected by provider */
-export const newBlock = createAction('newBlock', t.type({ blockNumber: t.number }));
+export const newBlock = createAction('block/new', t.type({ blockNumber: t.number }));
 export interface newBlock extends ActionType<typeof newBlock> {}
 
 /**
@@ -20,7 +20,7 @@ export interface newBlock extends ActionType<typeof newBlock> {}
  * fromBlock is only set on the first time, to fetch and handle past events
  */
 export const tokenMonitored = createAction(
-  'tokenMonitored',
+  'token/monitored',
   t.intersection([
     t.type({
       token: Address,
@@ -45,6 +45,7 @@ export const channelOpen = createAsyncAction(
   t.partial({ settleTimeout: t.number, subkey: t.boolean, deposit: UInt(32) }),
   t.type({
     id: t.number,
+    token: Address,
     settleTimeout: t.number,
     isFirstParticipant: t.boolean,
     txHash: Hash,
@@ -138,12 +139,15 @@ export const channelSettle = createAsyncAction(
   'channel/settle/success',
   'channel/settle/failure',
   t.union([t.partial({ subkey: t.boolean }), t.undefined]),
-  t.type({
-    id: t.number,
-    txHash: Hash,
-    txBlock: t.number,
-    confirmed: t.union([t.undefined, t.boolean]),
-  }),
+  t.intersection([
+    t.type({
+      id: t.number,
+      txHash: Hash,
+      txBlock: t.number,
+      confirmed: t.union([t.undefined, t.boolean]),
+    }),
+    t.partial({ locks: t.readonlyArray(Lock) }),
+  ]),
 );
 
 export namespace channelSettle {

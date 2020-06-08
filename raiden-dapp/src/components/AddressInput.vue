@@ -63,7 +63,7 @@ import { Component, Emit, Mixins, Prop, Watch } from 'vue-property-decorator';
 import { mapState } from 'vuex';
 
 import QrCode from '@/components/icons/QrCode.vue';
-import QrCodeOverlay from '@/components/QrCodeOverlay.vue';
+import QrCodeOverlay from '@/components/overlays/QrCodeOverlay.vue';
 import { Presences } from '@/model/types';
 import AddressUtils from '@/utils/address-utils';
 import BlockieMixin from '@/mixins/blockie-mixin';
@@ -239,12 +239,20 @@ export default class AddressInput extends Mixins(BlockieMixin) {
         debounceTime(600),
         switchMap(value => {
           if (!value) {
+            if (this.touched) {
+              return of<ValidationResult>({
+                error: this.$t('address-input.error.empty') as string,
+                value: ''
+              });
+            }
+
             return of<ValidationResult>({
-              error: this.$t('address-input.error.empty') as string,
+              error: '',
               value: ''
             });
           }
 
+          this.touched = true;
           const [addresses, nonAddresses] = partition(of(value), value =>
             AddressUtils.isAddress(value)
           );
@@ -322,7 +330,7 @@ export default class AddressInput extends Mixins(BlockieMixin) {
     if (!this.$refs.address) {
       return;
     }
-    this.touched = true;
+
     this.valid = this.errorMessages.length === 0;
     if (!this.valid) {
       return;
@@ -441,10 +449,9 @@ export default class AddressInput extends Mixins(BlockieMixin) {
     }
 
     .v-messages {
-      color: #323232 !important;
       font-family: $main-font;
       font-size: 14px;
-      line-height: 21px;
+      line-height: 16px;
       text-align: left;
       border: 1px solid transparent;
 
@@ -462,6 +469,7 @@ export default class AddressInput extends Mixins(BlockieMixin) {
       }
 
       &__message {
+        color: $secondary-text-color;
         line-height: 1.1;
       }
     }

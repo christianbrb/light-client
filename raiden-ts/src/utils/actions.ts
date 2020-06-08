@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/class-name-casing */
+/* eslint-disable @typescript-eslint/ban-types */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as t from 'io-ts';
 import isMatchWith from 'lodash/isMatchWith';
@@ -165,7 +165,7 @@ export function isActionOf<AC extends ActionCreator<any, any, any, any>>(
 ) {
   const arr = Array.isArray(ac) ? ac : [ac];
   function _isActionOf(action: unknown): action is ReturnType<AC> {
-    return action != null && arr.some(a => a.is(action));
+    return action != null && arr.some((a) => a.is(action));
   }
   if (args.length > 0) return _isActionOf(args[0]);
   return _isActionOf;
@@ -254,16 +254,17 @@ export function createAction<
     process.env.NODE_ENV === 'development'
       ? (action: unknown) => codec.is(action)
       : (action: unknown) => (action as any)?.['type'] === type;
-  return Object.assign(
-    (payload?: t.TypeOf<NonNullable<TPayload>>, meta?: t.TypeOf<NonNullable<TMeta>>) => ({
-      type,
-      ...(payloadC ? { payload } : null),
-      ...(metaC ? { meta } : null),
-      ...(error !== undefined ? { error } : null),
-    }),
-    { codec, type, is },
-    error !== undefined ? { error } : null,
-  ) as ActionCreator<TType, TPayload, TMeta, TError>;
+  const members = { codec, type, is, ...(error !== undefined ? { error } : null) };
+  const factory = (
+    payload?: t.TypeOf<NonNullable<TPayload>>,
+    meta?: t.TypeOf<NonNullable<TMeta>>,
+  ) => ({
+    type,
+    ...(payloadC ? { payload } : null),
+    ...(metaC ? { meta } : null),
+    ...(error !== undefined ? { error } : null),
+  });
+  return Object.assign(factory, members) as ActionCreator<TType, TPayload, TMeta, TError>;
 }
 
 /*** Async Actions ***/
@@ -525,7 +526,7 @@ export async function asyncActionToPromise<
           ? isConfirmationResponseOf<AAC>(asyncAction, meta)
           : isResponseOf<AAC>(asyncAction, meta),
       ),
-      map(action => {
+      map((action) => {
         if (asyncAction.failure.is(action))
           throw action.payload as ActionType<AAC['failure']>['payload'];
         else if (action.payload.confirmed === false)
@@ -631,9 +632,9 @@ export function createReducer<S, A extends Action = Action>(initialState: S) {
       AD extends AnyAC = AC
     >(ac: AC | AC[], handler: H) {
       const arr = Array.isArray(ac) ? ac : [ac];
-      assert(!arr.some(a => a.type in handlers), 'Already handled');
+      assert(!arr.some((a) => a.type in handlers), 'Already handled');
       return makeReducer<ACs | AC, Iterate<X>>(
-        Object.assign({}, handlers, ...arr.map(ac => ({ [ac.type]: [ac, handler] }))),
+        Object.assign({}, handlers, ...arr.map((ac) => ({ [ac.type]: [ac, handler] }))),
       );
     }
     // grow reducer function with our `handle` extender

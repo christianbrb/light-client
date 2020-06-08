@@ -2,7 +2,7 @@ import './polyfills';
 import { Signer } from 'ethers/abstract-signer';
 import { AsyncSendable, Web3Provider, JsonRpcProvider } from 'ethers/providers';
 import { Network, BigNumber, BigNumberish, bigNumberify } from 'ethers/utils';
-import { Zero, AddressZero } from 'ethers/constants';
+import { Zero, AddressZero, MaxUint256, HashZero } from 'ethers/constants';
 
 import { MatrixClient } from 'matrix-js-sdk';
 import { applyMiddleware, createStore, Store } from 'redux';
@@ -12,7 +12,7 @@ import { createLogger } from 'redux-logger';
 import constant from 'lodash/constant';
 import memoize from 'lodash/memoize';
 import { Observable, AsyncSubject, merge, defer, EMPTY, ReplaySubject, of } from 'rxjs';
-import { first, filter, map, mergeMap, skip } from 'rxjs/operators';
+import { first, filter, map, mergeMap, skip, pluck } from 'rxjs/operators';
 import logging from 'loglevel';
 
 import { TokenNetworkRegistryFactory } from './contracts/TokenNetworkRegistryFactory';
@@ -24,14 +24,14 @@ import { UserDepositFactory } from './contracts/UserDepositFactory';
 import { SecretRegistryFactory } from './contracts/SecretRegistryFactory';
 
 import versions from './versions.json';
-import { ContractsInfo, EventTypes, OnChange, RaidenEpicDeps } from './types';
+import { ContractsInfo, EventTypes, OnChange, RaidenEpicDeps, Latest } from './types';
 import { ShutdownReason } from './constants';
 import { RaidenState, getState } from './state';
 import { RaidenConfig, PartialRaidenConfig } from './config';
 import { RaidenChannels, ChannelState } from './channels/state';
-import { RaidenTransfer } from './transfers/state';
+import { RaidenTransfer, Direction } from './transfers/state';
 import { raidenReducer } from './reducer';
-import { raidenRootEpic } from './epics';
+import { raidenRootEpic, getLatest$ } from './epics';
 import {
   RaidenAction,
   RaidenEvents,
@@ -46,13 +46,21 @@ import {
   channelSettle,
   tokenMonitored,
 } from './channels/actions';
+import { channelKey } from './channels/utils';
 import { matrixPresence } from './transport/actions';
 import { transfer, transferSigned } from './transfers/actions';
-import { makeSecret, getSecrethash, makePaymentId, raidenSentTransfer } from './transfers/utils';
-import { pathFind } from './path/actions';
-import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './path/types';
-import { pfsListInfo } from './path/utils';
-import { Address, Secret, Storage, Hash, UInt, decode, assert } from './utils/types';
+import {
+  makeSecret,
+  getSecrethash,
+  makePaymentId,
+  raidenTransfer,
+  transferKey,
+  transferKeyToMeta,
+} from './transfers/utils';
+import { pathFind } from './services/actions';
+import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './services/types';
+import { pfsListInfo } from './services/utils';
+import { Address, Secret, Storage, Hash, UInt, decode, assert, isntNil } from './utils/types';
 import { isActionOf, asyncActionToPromise, isResponseOf } from './utils/actions';
 import { patchSignSend } from './utils/ethers';
 import { pluckDistinct } from './utils/rx';
@@ -60,7 +68,7 @@ import {
   getContracts,
   getSigner,
   initTransfers$,
-  mapTokenToPartner,
+  mapRaidenChannels,
   chooseOnchainAccount,
   getContractWithSigner,
   waitConfirmation,
@@ -97,10 +105,15 @@ export class Raiden {
 
   /**
    * Observable of completed and pending transfers
-   * Every time a transfer state is updated, it's emitted here. 'secrethash' property is unique and
+   * Every time a transfer state is updated, it's emitted here. 'key' property is unique and
    * may be used as identifier to know which transfer got updated.
    */
   public readonly transfers$: Observable<RaidenTransfer>;
+
+  /** RaidenConfig object */
+  public config!: RaidenConfig;
+  /** RaidenConfig observable (for reactive use)  */
+  public config$: Observable<RaidenConfig>;
 
   /**
    * Expose ether's Provider.resolveName for ENS support
@@ -157,17 +170,17 @@ export class Raiden {
     // use next from latest known blockNumber as start block when polling
     provider.resetEventsBlock(state.blockNumber + 1);
 
-    const latest$: RaidenEpicDeps['latest$'] = new ReplaySubject(1);
+    const latest$ = new ReplaySubject<Latest>(1);
 
     // pipe cached state
     this.state$ = latest$.pipe(pluckDistinct('state'));
     // pipe action, skipping cached
     this.action$ = latest$.pipe(pluckDistinct('action'), skip(1));
-    this.channels$ = this.state$.pipe(map(state => mapTokenToPartner(state)));
+    this.channels$ = this.state$.pipe(pluckDistinct('channels'), map(mapRaidenChannels));
     this.transfers$ = initTransfers$(this.state$);
     this.events$ = this.action$.pipe(filter(isActionOf(RaidenEvents)));
 
-    this.getTokenInfo = memoize(async function(this: Raiden, token: string) {
+    this.getTokenInfo = memoize(async function (this: Raiden, token: string) {
       assert(Address.is(token), 'Invalid address');
       const tokenContract = this.deps.getTokenContract(token);
       const [totalSupply, decimals, name, symbol] = await Promise.all([
@@ -232,9 +245,12 @@ export class Raiden {
       },
     });
 
-    this.deps.config$
+    this.config$ = this.deps.config$;
+    this.config$.subscribe((config) => (this.config = config));
+
+    this.config$
       .pipe(pluckDistinct('logger'))
-      .subscribe(logger => this.log.setLevel(logger || 'silent', false));
+      .subscribe((logger) => this.log.setLevel(logger || 'silent', false));
 
     // minimum blockNumber of contracts deployment as start scan block
     this.epicMiddleware = createEpicMiddleware<
@@ -250,6 +266,13 @@ export class Raiden {
       state as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       applyMiddleware(loggerMiddleware, this.epicMiddleware),
     );
+
+    // populate deps.latest$, to ensure config & logger subscriptions are setup before start
+    getLatest$(
+      of(raidenConfigUpdate({})),
+      of(this.store.getState()),
+      this.deps,
+    ).subscribe((latest) => this.deps.latest$.next(latest));
   }
 
   /**
@@ -258,6 +281,7 @@ export class Raiden {
    * An async factory is needed so we can do the needed async requests to construct the required
    * parameters ahead of construction time, and avoid partial initialization then
    *
+   * @param this - Raiden class or subclass
    * @param connection - A URL or provider to connect to, one of:
    *     <ul>
    *       <li>JsonRpcProvider instance,</li>
@@ -279,8 +303,9 @@ export class Raiden {
    * @param config - Raiden configuration
    * @param subkey - Whether to use a derived subkey or not
    * @returns Promise to Raiden SDK client instance
-   **/
-  public static async create(
+   */
+  public static async create<R extends typeof Raiden>(
+    this: R,
     connection: JsonRpcProvider | AsyncSendable | string,
     account: Signer | string | number,
     storageOrState?:
@@ -291,7 +316,7 @@ export class Raiden {
     contracts?: ContractsInfo,
     config?: PartialRaidenConfig,
     subkey?: true,
-  ): Promise<Raiden> {
+  ): Promise<InstanceType<R>> {
     let provider: JsonRpcProvider;
     if (typeof connection === 'string') {
       provider = new JsonRpcProvider(connection);
@@ -332,7 +357,15 @@ export class Raiden {
       `Mismatch between network or registry address and loaded state`,
     );
 
-    const raiden = new Raiden(provider, network, signer, contracts, state, defaultConfig, main);
+    const raiden = new this(
+      provider,
+      network,
+      signer,
+      contracts,
+      state,
+      defaultConfig,
+      main,
+    ) as InstanceType<R>;
     if (onState) raiden.state$.subscribe(onState, onStateComplete, onStateComplete);
     return raiden;
   }
@@ -419,17 +452,6 @@ export class Raiden {
   }
 
   /**
-   * Getter for current Raiden Config
-   *
-   * @returns Current Raiden config
-   */
-  public get config(): RaidenConfig {
-    let config!: RaidenConfig;
-    this.deps.config$.pipe(first()).subscribe(c => (config = c));
-    return config;
-  }
-
-  /**
    * Returns the currently used SDK version.
    *
    * @returns SDK version
@@ -495,11 +517,11 @@ export class Raiden {
         fromBlock: this.deps.contractsInfo.TokenNetworkRegistry.block_number,
         toBlock: 'latest',
       })
-      .then(logs =>
+      .then((logs) =>
         logs
-          .map(log => this.deps.registryContract.interface.parseLog(log))
-          .filter(parsed => !!parsed.values?.token_address)
-          .map(parsed => parsed.values.token_address as Address),
+          .map((log) => this.deps.registryContract.interface.parseLog(log))
+          .filter((parsed) => !!parsed.values?.token_address)
+          .map((parsed) => parsed.values.token_address as Address),
       );
   }
 
@@ -539,6 +561,7 @@ export class Raiden {
    * @param options - (optional) option parameter
    * @param options.settleTimeout - Custom, one-time settle timeout
    * @param options.subkey - Whether to use the subkey for on-chain tx or main account (default)
+   * @param options.deposit - Deposit to perform in parallel with channel opening
    * @param onChange - Optional callback for status change notification
    * @returns txHash of channelOpen call, iff it succeeded
    */
@@ -566,8 +589,8 @@ export class Raiden {
 
     await this.state$
       .pipe(
-        pluckDistinct('channels', tokenNetwork, partner, 'state'),
-        first(state => state === ChannelState.open),
+        pluckDistinct('channels', channelKey({ tokenNetwork, partner }), 'state'),
+        first((state) => state === ChannelState.open),
       )
       .toPromise();
     onChange?.({ type: EventTypes.CONFIRMED, payload: { txHash: openTxHash } });
@@ -715,18 +738,16 @@ export class Raiden {
    * @param target - Target address (must be getAvailability before)
    * @param value - Amount to try to transfer
    * @param options - Optional parameters for transfer:
-   *    <ul>
-   *      <li>paymentId - payment identifier, a random one will be generated if missing</li>
-   *      <li>secret - Secret to register, a random one will be generated if missing</li>
-   *      <li>secrethash - Must match secret, if both provided, or else, secret must be
-   *          informed to target by other means, and reveal can't be performed</li>
-   *      <li>paths - Used to specify possible routes & fees instead of querying PFS.</li>
-   *      <li>pfs - Use this PFS instead of configured or automatically choosen ones.
-   *          Is ignored if paths were already provided. If neither are set and config.pfs is not
-   *          disabled (null), use it if set or if undefined (auto mode), fetches the best
-   *          PFS from ServiceRegistry and automatically fetch routes from it.</li>
-   *    </ul>
-   * @returns A promise to transfer's secrethash (unique id) when it's accepted
+   * @param options.paymentId - payment identifier, a random one will be generated if missing</li>
+   * @param options.secret - Secret to register, a random one will be generated if missing</li>
+   * @param options.secrethash - Must match secret, if both provided, or else, secret must be
+   *     informed to target by other means, and reveal can't be performed</li>
+   * @param options.paths - Used to specify possible routes & fees instead of querying PFS.</li>
+   * @param options.pfs - Use this PFS instead of configured or automatically choosen ones.
+   *     Is ignored if paths were already provided. If neither are set and config.pfs is not
+   *     disabled (null), use it if set or if undefined (auto mode), fetches the best
+   *     PFS from ServiceRegistry and automatically fetch routes from it.</li>
+   * @returns A promise to transfer's unique key (id) when it's accepted
    */
   public async transfer(
     token: string,
@@ -739,7 +760,7 @@ export class Raiden {
       paths?: RaidenPaths;
       pfs?: RaidenPFS;
     } = {},
-  ): Promise<Hash> {
+  ): Promise<string> {
     assert(Address.is(token) && Address.is(target), 'Invalid address');
     const tokenNetwork = this.state.tokens[token];
     assert(tokenNetwork, 'Unknown token network');
@@ -772,7 +793,7 @@ export class Raiden {
       // wait for pathFind response
       this.action$.pipe(
         first(isResponseOf(pathFind, pathFindMeta)),
-        map(action => {
+        map((action) => {
           if (pathFind.failure.is(action)) throw action.payload;
           return action.payload.paths;
         }),
@@ -785,15 +806,19 @@ export class Raiden {
       }),
     )
       .pipe(
-        mergeMap(paths =>
+        mergeMap((paths) =>
           merge(
             // wait for transfer response
             this.action$.pipe(
               filter(isActionOf([transferSigned, transfer.failure])),
-              first(action => action.meta.secrethash === secrethash),
-              map(action => {
+              first(
+                (action) =>
+                  action.meta.direction === Direction.SENT &&
+                  action.meta.secrethash === secrethash,
+              ),
+              map((action) => {
                 if (transfer.failure.is(action)) throw action.payload;
-                return secrethash;
+                return transferKey(action.meta);
               }),
             ),
             // request transfer with returned/validated paths at 'merge' subscription time
@@ -808,7 +833,7 @@ export class Raiden {
                     paymentId,
                     secret,
                   },
-                  { secrethash },
+                  { secrethash, direction: Direction.SENT },
                 ),
               );
               return EMPTY;
@@ -824,25 +849,23 @@ export class Raiden {
    *
    * The returned promise will resolve with the final amount received by the target
    *
-   * @param secrethash - Transfer identifier
+   * @param transferKey - Transfer identifier
    * @returns Amount received by target, as informed by them on SecretRequest
    */
-  public async waitTransfer(secrethash: string): Promise<BigNumber | undefined> {
-    assert(Hash.is(secrethash), 'Invalid secrethash for transfer');
-    let state = this.state;
-    assert(secrethash in state.sent, 'Unknown secrethash');
+  public async waitTransfer(transferKey: string): Promise<BigNumber | undefined> {
+    const { direction, secrethash } = transferKeyToMeta(transferKey);
+    assert(secrethash in this.state[direction], 'Unknown transfer');
 
-    const sent = raidenSentTransfer(state.sent[secrethash]);
+    const transf = raidenTransfer(this.state[direction][secrethash]);
     // already completed/past transfer
-    if (sent.completed) {
-      if (sent.success) return this.state.sent[secrethash].secretRequest?.[1]?.amount;
-      else throw new RaidenError(ErrorCodes.XFER_ALREADY_COMPLETED, { status: sent.status });
+    if (transf.completed) {
+      if (transf.success) return this.state[direction][secrethash].secretRequest?.[1]?.amount;
+      else throw new RaidenError(ErrorCodes.XFER_ALREADY_COMPLETED, { status: transf.status });
     }
 
     // throws/rejects if a failure occurs
-    await asyncActionToPromise(transfer, { secrethash }, this.action$);
-    state = this.state;
-    return state.sent[secrethash].secretRequest?.[1]?.amount;
+    await asyncActionToPromise(transfer, { secrethash, direction }, this.action$);
+    return this.state[direction][secrethash].secretRequest?.[1]?.amount;
   }
 
   /**
@@ -925,10 +948,10 @@ export class Raiden {
       ? of<readonly (string | Address)[]>([this.config.pfs])
       : this.deps.latest$.pipe(
           pluckDistinct('pfsList'),
-          first(v => v.length > 0),
+          first((v) => v.length > 0),
         )
     )
-      .pipe(mergeMap(pfsList => pfsListInfo(pfsList, this.deps)))
+      .pipe(mergeMap((pfsList) => pfsListInfo(pfsList, this.deps)))
       .toPromise();
   }
 
@@ -985,16 +1008,16 @@ export class Raiden {
    * @returns Promise to UDC remaining capacity
    */
   public async getUDCCapacity(): Promise<BigNumber> {
-    const balance = await this.deps.userDepositContract.functions.balances(this.deps.address);
+    const balance = await this.deps.latest$.pipe(pluck('udcBalance'), first(isntNil)).toPromise();
     const blockNumber = this.state.blockNumber;
-    const owedAmount = Object.values(this.state.path.iou)
-      .reduce((acc, value) => {
-        const nonExpiredIOUs = Object.values(value).filter(value =>
-          value.expiration_block.gte(blockNumber),
-        );
-        acc.push(...nonExpiredIOUs);
-        return acc;
-      }, new Array<IOU>())
+    const owedAmount = Object.values(this.state.iou)
+      .reduce(
+        (acc, value) => [
+          ...acc,
+          ...Object.values(value).filter((value) => value.expiration_block.gte(blockNumber)),
+        ],
+        [] as IOU[],
+      )
       .reduce((acc, iou) => acc.add(iou.amount), Zero);
     return balance.sub(owedAmount);
   }
@@ -1017,50 +1040,64 @@ export class Raiden {
    * @param options - tx options
    * @param options.subkey - By default, if using subkey, main account is used to send transactions
    *    Set this to true if one wants to force sending the transaction with the subkey
+   * @param options.allowance - Value to approve on service token. Allows further deposits without
+   *    needing to approve again. Defaults to exact amount.
    * @returns transaction hash
    */
   public async depositToUDC(
     amount: BigNumberish,
     onChange?: OnChange<EventTypes, { txHash: string }>,
-    { subkey }: { subkey?: boolean } = {},
+    { subkey, allowance }: { subkey?: boolean; allowance?: BigNumberish } = {},
   ): Promise<Hash> {
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.debug);
+    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.error);
 
-    const depositAmount = bigNumberify(amount);
-    assert(depositAmount.gt(Zero), 'Please deposit a positive amount.', this.log.debug);
+    const deposit = bigNumberify(amount);
+    assert(deposit.gt(Zero), 'Please deposit a positive amount.', this.log.error);
 
     const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
 
     const userDepositContract = getContractWithSigner(this.deps.userDepositContract, signer);
-    const serviceTokenContract = getContractWithSigner(
+    const tokenContract = getContractWithSigner(
       this.deps.getTokenContract(await this.userDepositTokenAddress()),
       signer,
     );
-    const balance = await serviceTokenContract.functions.balanceOf(address);
+    const tokenBalance = await tokenContract.functions.balanceOf(address);
 
-    assert(balance.gte(amount), `Insufficient token balance (${balance}).`, this.log.debug);
-
-    const approveReceipt = await callAndWaitMined(
-      serviceTokenContract,
-      'approve',
-      [userDepositContract.address, depositAmount],
-      ErrorCodes.RDN_APPROVE_TRANSACTION_FAILED,
-      { log: this.log },
+    assert(
+      tokenBalance.gte(amount),
+      `Insufficient token balance (${tokenBalance}).`,
+      this.log.error,
+    );
+    assert(
+      !allowance || bigNumberify(allowance).gte(amount),
+      'requested allowance smaller than amount',
+      this.log.error,
     );
 
-    onChange?.({
-      type: EventTypes.APPROVED,
-      payload: {
-        txHash: approveReceipt.transactionHash as Hash,
-      },
-    });
+    const tokenAllowance = await tokenContract.functions.allowance(
+      address,
+      userDepositContract.address,
+    );
+    let approveTxHash = HashZero as Hash;
+    if (tokenAllowance.lt(deposit))
+      approveTxHash = (
+        await callAndWaitMined(
+          tokenContract,
+          'approve',
+          [userDepositContract.address, allowance ?? deposit],
+          ErrorCodes.RDN_APPROVE_TRANSACTION_FAILED,
+          { log: this.log },
+        )
+      ).transactionHash as Hash;
 
-    const currentUDCBalance = await userDepositContract.functions.balances(this.address);
+    onChange?.({ type: EventTypes.APPROVED, payload: { txHash: approveTxHash } });
+
+    const udcTotalDeposit = await userDepositContract.functions.total_deposit(this.address);
 
     const depositReceipt = await callAndWaitMined(
       userDepositContract,
       'deposit',
-      [this.address, currentUDCBalance.add(depositAmount)],
+      [this.address, udcTotalDeposit.add(deposit)],
       ErrorCodes.RDN_DEPOSIT_TRANSACTION_FAILED,
       { log: this.log },
     );
@@ -1091,28 +1128,41 @@ export class Raiden {
    * Example:
    *   // transfer 0.1 ETH from main account to subkey account, when subkey is used
    *   await raiden.transferOnchainBalance(raiden.address, parseEther('0.1'));
-   *   // transfer 0.1 ETH back from subkey account to main account
-   *   await raiden.transferOnchainBalance(raiden.mainAddress, parseEther('0.1'), true);
-   * TODO: expose a nice way to transfer ALL, considering gas price & limit
+   *   // transfer entire balance from subkey account back to main account
+   *   await raiden.transferOnchainBalance(raiden.mainAddress, undefined, { subkey: true });
    *
    * @param to - Recipient address
    * @param value - Amount of ETH (in Wei) to transfer. Use ethers/utils::parseEther if needed
+   *    Defaults to a very big number, which will cause all entire balance to be transfered
    * @param options - tx options
    * @param options.subkey - By default, if using subkey, main account is used to send transactions
    *    Set this to true if one wants to force sending the transaction with the subkey
+   * @param options.gasPrice - Set to force a specific gasPrice; used to calculate transferable
+   *    amount when transfering entire balance. If left unset, uses average network gasPrice
    * @returns transaction hash
    */
   public async transferOnchainBalance(
     to: string,
-    value: BigNumberish,
-    { subkey }: { subkey?: boolean } = {},
+    value: BigNumberish = MaxUint256,
+    { subkey, gasPrice }: { subkey?: boolean; gasPrice?: BigNumberish } = {},
   ): Promise<Hash> {
     assert(Address.is(to), 'Invalid address', this.log.debug);
     assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.debug);
 
-    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
 
-    const tx = await signer.sendTransaction({ to, value: bigNumberify(value) });
+    const price = gasPrice ? bigNumberify(gasPrice) : await this.deps.provider.getGasPrice();
+    const gasLimit = bigNumberify(21000);
+
+    const curBalance = await this.getBalance(address);
+    // transferableBalance is current balance minus the cost of a single transfer as per gasPrice
+    const transferableBalance = curBalance.sub(price.mul(gasLimit));
+    assert(transferableBalance.gt(Zero), 'Not enough balance for a transfer', this.log.error);
+
+    // caps value to transferableBalance, so if it's too big, transfer all
+    const amount = transferableBalance.lte(value) ? transferableBalance : bigNumberify(value);
+
+    const tx = await signer.sendTransaction({ to, value: amount, gasPrice: price, gasLimit });
     const receipt = await tx.wait();
 
     if (!receipt.status) throw new RaidenError(ErrorCodes.RDN_TRANSFER_ONCHAIN_BALANCE_FAILED);
@@ -1122,11 +1172,11 @@ export class Raiden {
   /**
    * Transfer value tokens on-chain to address.
    * If subkey is being used, use main account by default, or subkey account if 'subkey' is true
-   * TODO: expose a nice way to transfer ALL tokens
    *
    * @param token - Token address
    * @param to - Recipient address
    * @param value - Amount of tokens (in Wei) to transfer. Use ethers/utils::parseUnits if needed
+   *    Defaults to a very big number, which will cause all entire balance to be transfered
    * @param options - tx options
    * @param options.subkey - By default, if using subkey, main account is used to send transactions
    *    Set this to true if one wants to force sending the transaction with the subkey
@@ -1135,19 +1185,23 @@ export class Raiden {
   public async transferOnchainTokens(
     token: string,
     to: string,
-    value: BigNumberish,
+    value: BigNumberish = MaxUint256,
     { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
     assert(Address.is(token) && Address.is(to), 'Invalid address', this.log.debug);
     assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.debug);
 
-    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
     const tokenContract = getContractWithSigner(this.deps.getTokenContract(token), signer);
+
+    const curBalance = await this.getTokenBalance(token, address);
+    // caps value to balance, so if it's too big, transfer all
+    const amount = curBalance.lte(value) ? curBalance : bigNumberify(value);
 
     const receipt = await callAndWaitMined(
       tokenContract,
       'transfer',
-      [to, bigNumberify(value)],
+      [to, amount],
       ErrorCodes.RDN_TRANSFER_ONCHAIN_TOKENS_FAILED,
       { log: this.log },
     );

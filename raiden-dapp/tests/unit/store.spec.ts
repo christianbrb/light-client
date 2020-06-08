@@ -3,7 +3,8 @@ import { TestData } from './data/mock-data';
 import { DeniedReason, emptyTokenModel, Token } from '@/model/types';
 import { Tokens } from '@/types';
 import { Zero } from 'ethers/constants';
-import { BigNumber } from 'ethers/utils';
+import { BigNumber, bigNumberify } from 'ethers/utils';
+import { Capabilities } from 'raiden-ts';
 
 describe('store', () => {
   const testTokens = (token: string, name?: string, symbol?: string) => {
@@ -32,6 +33,10 @@ describe('store', () => {
     store.replaceState(defaultState());
   });
 
+  test('isConnected getter is false while disconnected', () => {
+    expect(store.getters.isConnected).toBe(false);
+  });
+
   test('loadComplete mutation changes the loading state', () => {
     expect(store.state.loading).toBe(true);
     store.commit('loadComplete');
@@ -50,6 +55,26 @@ describe('store', () => {
     expect(store.state.accountBalance).toBe('12.0');
   });
 
+  test('raidenAccountBalance mutation changes the raidenAccountBalance', () => {
+    expect(store.state.raidenAccountBalance).toBe('');
+    store.commit('raidenAccountBalance', '0.1');
+    expect(store.state.raidenAccountBalance).toBe('0.1');
+  });
+
+  test('balance getter retuns balance if no raidenAccountBalance exists', () => {
+    expect(store.state.raidenAccountBalance).toBe('');
+    expect(store.state.accountBalance).toBe('0.0');
+    store.commit('balance', '12.0');
+    expect(store.getters.balance).toBe('12.0');
+  });
+
+  test('balance getter returns raidenAccountBalance if it exists', () => {
+    expect(store.state.raidenAccountBalance).toBe('');
+    expect(store.state.accountBalance).toBe('0.0');
+    store.commit('raidenAccountBalance', '13.0');
+    expect(store.getters.balance).toBe('13.0');
+  });
+
   test('account mutation changes the defaultAccount state', () => {
     expect(store.state.defaultAccount).toBe('');
     store.commit('account', 'test');
@@ -66,6 +91,15 @@ describe('store', () => {
     expect(store.state.channels).toEqual({});
     store.commit('updateChannels', TestData.mockChannels);
     expect(store.state.channels).toEqual(TestData.mockChannels);
+  });
+
+  test('backupState mutation changes the stateBackup state', () => {
+    expect(store.state.stateBackup).toEqual('');
+
+    const mockStringStateFile = '{ ...stateFileContent }';
+    store.commit('backupState', mockStringStateFile);
+
+    expect(store.state.stateBackup).toEqual(mockStringStateFile);
   });
 
   test('the tokens getter returns tokens that have channels', () => {
@@ -111,20 +145,64 @@ describe('store', () => {
   });
 
   test('the allTokens getter returns the cached tokens as an array', () => {
-    const tokens = testTokens(
-      '0xd0A1E359811322d97991E03f863a0C30C2cF029C',
-      'Test Token',
-      'TTT'
-    );
+    const tokens: Tokens = {
+      '0x123': {
+        address: '0x123',
+        balance: Zero,
+        decimals: 18,
+        name: 'Test Token 1',
+        symbol: 'TT1'
+      },
+      '0x456': {
+        address: '0x456',
+        balance: bigNumberify('3'),
+        decimals: 18,
+        name: 'Test Token 2',
+        symbol: 'TT2'
+      },
+      '0x789': {
+        address: '0x789',
+        balance: Zero,
+        decimals: 18,
+        name: 'Test Token 3',
+        symbol: 'TT3'
+      },
+      '0x012': {
+        address: '0x789',
+        balance: Zero,
+        decimals: 18,
+        name: 'Test Token 4'
+      }
+    };
 
     store.commit('updateTokens', tokens);
     expect(store.getters.allTokens).toEqual([
       {
-        address: '0xd0A1E359811322d97991E03f863a0C30C2cF029C',
+        address: '0x456',
+        balance: bigNumberify('3'),
+        decimals: 18,
+        name: 'Test Token 2',
+        symbol: 'TT2'
+      },
+      {
+        address: '0x123',
         balance: Zero,
         decimals: 18,
-        symbol: 'TTT',
-        name: 'Test Token'
+        name: 'Test Token 1',
+        symbol: 'TT1'
+      },
+      {
+        address: '0x789',
+        balance: Zero,
+        decimals: 18,
+        name: 'Test Token 3',
+        symbol: 'TT3'
+      },
+      {
+        address: '0x789',
+        balance: Zero,
+        decimals: 18,
+        name: 'Test Token 4'
       }
     ]);
   });
@@ -155,8 +233,8 @@ describe('store', () => {
   });
 
   test('the network getter returns "Chain x" when there is no chain name', () => {
-    store.commit('network', { name: '', chainId: 89 });
-    expect(store.getters.network).toEqual('Chain 89');
+    store.commit('network', { name: 'unknown', chainId: 89 });
+    expect(store.getters.network).toEqual('89');
   });
 
   test('the network getter returns the chain name when it exists', () => {
@@ -173,7 +251,7 @@ describe('store', () => {
 
   describe('channelWithBiggestCapacity', () => {
     test('return the open channel when there is only one open channel', () => {
-      let mockChannels = TestData.mockChannels;
+      const mockChannels = TestData.mockChannels;
       store.commit('updateChannels', mockChannels);
       expect(
         store.getters.channelWithBiggestCapacity(
@@ -231,12 +309,34 @@ describe('store', () => {
     expect(store.getters.tokens).toEqual([]);
   });
 
-  test('return only pending transfers ', () => {
+  test('return only pending transfers', () => {
     [
-      { secrethash: '0x1', completed: true },
-      { secrethash: '0x2', completed: false }
+      { key: 'sent:0x1', completed: true },
+      { key: 'sent:0x2', completed: false }
     ].forEach(transfer => store.commit('updateTransfers', transfer));
     const { pendingTransfers } = store.getters;
     expect(Object.keys(pendingTransfers).length).toEqual(1);
+  });
+
+  test('return transfer with specific identifier ', () => {
+    [
+      { key: 'sent:0x1', paymentId: '0x1' },
+      { key: 'sent:0x2', paymentId: '0x2' }
+    ].forEach(transfer => store.commit('updateTransfers', transfer));
+    const transfer = store.getters.transfer('0x1');
+    expect(transfer.key).toEqual('sent:0x1');
+  });
+
+  test('isConnected should be false if loading', () => {
+    store.commit('account', '0x0000000000000000000000000000000000020001');
+    expect(store.getters.isConnected).toBe(false);
+  });
+
+  test('canReceive should reflect config.caps', () => {
+    store.commit('updateConfig', { caps: { [Capabilities.NO_RECEIVE]: true } });
+    expect(store.getters.canReceive).toBe(false);
+    // no 'noReceive' canReceive
+    store.commit('updateConfig', { caps: {} });
+    expect(store.getters.canReceive).toBe(true);
   });
 });

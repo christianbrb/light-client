@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-explicit-any,@typescript-eslint/camelcase */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Storage } from 'raiden-ts/utils/types';
 
 export interface RequestOpts {
@@ -16,7 +16,7 @@ export interface RequestOpts {
 export type RequestCallback = (err?: Error, response?: any, body?: any) => void;
 
 export const MockStorage: jest.Mock<jest.Mocked<Storage>, [{ [key: string]: string }?]> = jest.fn(
-  function(init?: { [key: string]: string }) {
+  function (init?: { [key: string]: string }) {
     const storage: NonNullable<typeof init> = init || {};
     return {
       storage,
@@ -139,7 +139,7 @@ export class MockMatrixRequestFn {
       return () => undefined;
     }
 
-    let timeoutId: NodeJS.Timeout | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined = undefined;
     const cancel = () => {
       if (timeoutId) {
         clearTimeout(timeoutId);

@@ -1,9 +1,12 @@
 import * as t from 'io-ts';
-import { Network } from 'ethers/utils';
+import { Network, parseEther } from 'ethers/utils';
 
 import { Capabilities } from './constants';
-import { Address } from './utils/types';
+import { Address, UInt } from './utils/types';
 import { getNetworkName } from './utils/ethers';
+import { Caps } from './transport/types';
+
+const RTCIceServer = t.type({ urls: t.union([t.string, t.array(t.string)]) });
 
 /**
  * A Raiden configuration object with required and optional params from [[PartialRaidenConfig]].
@@ -21,6 +24,7 @@ import { getNetworkName } from './utils/ethers';
  * - httpTimeout - Used in http fetch requests
  * - discoveryRoom - Discovery Room to auto-join, use null to disable
  * - pfsRoom - PFS Room to auto-join and send PFSCapacityUpdate to, use null to disable
+ * - monitoringRoom - MS global room to auto-join and send RequestMonitoring messages, use null to disable
  * - pfs - Path Finding Service URL or Address. Set to null to disable, or empty string to enable
  *         automatic fetching from ServiceRegistry.
  * - pfsSafetyMargin - Safety margin to be added to fees received from PFS. Use `1.1` to add a 10%
@@ -28,8 +32,11 @@ import { getNetworkName } from './utils/ethers';
  * - matrixExcessRooms - Keep this much rooms for a single user of interest (partner, target).
  *                       Leave LRU beyond this threshold.
  * - confirmationBlocks - How many blocks to wait before considering a transaction as confirmed
+ * - monitoringReward - Reward to be paid to MS, in SVT/RDN; use Zero or null to disable
  * - logger - String specifying the console log level of redux-logger. Use '' to silence.
- * - caps - Own transport capabilities
+ * - caps - Own transport capabilities overrides. Set to null to disable all, including defaults
+ * - fallbackIceServers - STUN servers to be used as a fallback for WebRTC
+ * - rateToSvt - Exchange rate between tokens and SVT, in wei: e.g. rate[TKN]=2e18 => 1TKN = 2SVT
  * - matrixServer? - Specify a matrix server to use.
  * - subkey? - When using subkey, this sets the behavior when { subkey } option isn't explicitly
  *             set in on-chain method calls. false (default) = use main key; true = use subkey
@@ -43,10 +50,12 @@ export const RaidenConfig = t.readonly(
       httpTimeout: t.number,
       discoveryRoom: t.union([t.string, t.null]),
       pfsRoom: t.union([t.string, t.null]),
+      monitoringRoom: t.union([t.string, t.null]),
       pfs: t.union([Address, t.string, t.null]),
       pfsSafetyMargin: t.number,
       matrixExcessRooms: t.number,
       confirmationBlocks: t.number,
+      monitoringReward: t.union([t.null, UInt(32)]),
       logger: t.keyof({
         ['']: null, // silent/disabled
         trace: null,
@@ -55,7 +64,9 @@ export const RaidenConfig = t.readonly(
         warn: null,
         error: null,
       }),
-      caps: t.readonly(t.record(t.string /* Capabilities */, t.any)),
+      caps: t.union([t.null, Caps]),
+      fallbackIceServers: t.array(RTCIceServer),
+      rateToSvt: t.record(t.string, UInt(32)),
     }),
     t.partial({
       matrixServer: t.string,
@@ -90,16 +101,21 @@ export function makeDefaultConfig(
     httpTimeout: 30e3,
     discoveryRoom: `raiden_${getNetworkName(network)}_discovery`,
     pfsRoom: `raiden_${getNetworkName(network)}_path_finding`,
+    monitoringRoom: `raiden_${getNetworkName(network)}_monitoring`,
     pfs: '', // empty string = auto mode
     matrixExcessRooms: 3,
     pfsSafetyMargin: 1.0,
     confirmationBlocks: 5,
+    // SVT also uses 18 decimals, like Ether, so parseEther works
+    monitoringReward: parseEther('5') as UInt<32>,
     logger: 'info',
     caps: {
       [Capabilities.NO_DELIVERY]: true,
-      [Capabilities.NO_RECEIVE]: true,
       [Capabilities.NO_MEDIATE]: true,
+      [Capabilities.WEBRTC]: true,
     },
+    fallbackIceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    rateToSvt: {},
     ...overwrites,
   };
 }

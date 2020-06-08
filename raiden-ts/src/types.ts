@@ -14,7 +14,7 @@ import { SecretRegistry } from './contracts/SecretRegistry';
 
 import { RaidenAction } from './actions';
 import { RaidenState } from './state';
-import { Address } from './utils/types';
+import { Address, UInt } from './utils/types';
 import { RaidenConfig } from './config';
 import { Presences } from './transport/types';
 
@@ -28,16 +28,21 @@ export interface ContractsInfo {
   ServiceRegistry: Info;
   UserDeposit: Info;
   SecretRegistry: Info;
+  MonitoringService: Info;
+}
+
+export interface Latest {
+  action: RaidenAction;
+  state: RaidenState;
+  config: RaidenConfig;
+  presences: Presences;
+  pfsList: readonly Address[];
+  rtc: { [address: string]: RTCDataChannel };
+  udcBalance: UInt<32>;
 }
 
 export interface RaidenEpicDeps {
-  latest$: Subject<{
-    action: RaidenAction;
-    state: RaidenState;
-    config: RaidenConfig;
-    presences: Presences;
-    pfsList: readonly Address[];
-  }>;
+  latest$: Subject<Latest>;
   config$: Observable<RaidenConfig>;
   matrix$: AsyncSubject<MatrixClient>;
   provider: JsonRpcProvider;

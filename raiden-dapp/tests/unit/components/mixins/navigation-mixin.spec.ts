@@ -13,7 +13,7 @@ describe('NavigationMixin', () => {
 
   beforeEach(async () => {
     router = new VueRouter() as Mocked<VueRouter>;
-    router.push = jest.fn().mockReturnValue(null);
+    router.push = jest.fn().mockResolvedValue(null);
 
     const component = {
       render() {},
@@ -110,13 +110,13 @@ describe('NavigationMixin', () => {
     );
   });
 
-  test('navigate to general home', () => {
-    wrapper.vm.navigateToGeneralHome();
+  test('navigate to account', () => {
+    wrapper.vm.navigateToAccoount();
 
     expect(router.push).toHaveBeenCalledTimes(1);
     expect(router.push).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: RouteNames.GENERAL_HOME
+        name: RouteNames.ACCOUNT_ROOT
       })
     );
   });
@@ -127,15 +127,26 @@ describe('NavigationMixin', () => {
     expect(router.push).toHaveBeenCalledTimes(1);
     expect(router.push).toHaveBeenCalledWith(
       expect.objectContaining({
-        name: RouteNames.BACKUP_STATE
+        name: RouteNames.ACCOUNT_BACKUP
+      })
+    );
+  });
+
+  test('navigate to raiden account', () => {
+    wrapper.vm.navigateToRaidenAccountTransfer();
+
+    expect(router.push).toHaveBeenCalledTimes(1);
+    expect(router.push).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: RouteNames.ACCOUNT_RAIDEN
       })
     );
   });
 
   test('general modal back navigation', () => {
     wrapper.vm.$route.name = RouteNames.TRANSFER;
-    wrapper.vm.navigateToGeneralHome();
-    wrapper.vm.onGeneralBackClicked();
+    wrapper.vm.navigateToAccoount();
+    wrapper.vm.onModalBackClicked();
 
     expect(router.push).toHaveBeenCalledTimes(1);
     expect(router.go).toHaveBeenCalledTimes(1);

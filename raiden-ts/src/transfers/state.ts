@@ -13,6 +13,13 @@ import {
 } from '../messages/types';
 import { Address, Timed, Hash, Int, Signed, Secret } from '../utils/types';
 
+// it's like an enum, but with literals
+export const Direction = {
+  SENT: 'sent',
+  RECEIVED: 'received',
+} as const;
+export type Direction = typeof Direction[keyof typeof Direction];
+
 /**
  * This struct holds the relevant messages exchanged in a transfer
  * The transfer state is defined by the exchanged messages
@@ -23,12 +30,13 @@ export const TransferState = t.readonly(
       /** -> outgoing locked transfer */
       transfer: Timed(Signed(LockedTransfer)),
       fee: Int(32),
+      partner: Address,
     }),
     t.partial({
       /**
        * Transfer secret, if known
        * registerBlock is 0 if not yet registered on-chain
-       * */
+       */
       secret: Timed(t.type({ value: Secret, registerBlock: t.number })),
       /** <- incoming processed for locked transfer */
       transferProcessed: Timed(Signed(Processed)),
@@ -111,6 +119,7 @@ export enum RaidenTransferStatus {
  * This should be only used as a public view of the internal transfer state
  */
 export interface RaidenTransfer {
+  key: string; // some key which uniquely identifies this transfer
   secrethash: Hash; // used as transfer identifier
   direction: 'sent' | 'received';
   status: RaidenTransferStatus;

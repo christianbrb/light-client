@@ -1,5 +1,3 @@
-/* istanbul ignore file */
-/* eslint-disable @typescript-eslint/camelcase */
 /**
  * These io-ts codecs validate and decode JSON Raiden messages
  * They include BigNumber strings validation, enum validation (if needed), Address checksum
@@ -7,7 +5,7 @@
  */
 import * as t from 'io-ts';
 
-import { Address, Hash, Secret, UInt } from '../utils/types';
+import { Address, Hash, Secret, UInt, Int, Signature } from '../utils/types';
 import { Lock } from '../channels/types';
 
 // types
@@ -24,6 +22,8 @@ export enum MessageType {
   WITHDRAW_CONFIRMATION = 'WithdrawConfirmation',
   WITHDRAW_EXPIRED = 'WithdrawExpired',
   PFS_CAPACITY_UPDATE = 'PFSCapacityUpdate',
+  PFS_FEE_UPDATE = 'PFSFeeUpdate',
+  MONITOR_REQUEST = 'RequestMonitoring',
 }
 
 // Mixin of a message that contains an identifier and should be ack'ed with a respective Delivered
@@ -238,6 +238,49 @@ export const PFSCapacityUpdate = t.readonly(
 );
 export interface PFSCapacityUpdate extends t.TypeOf<typeof PFSCapacityUpdate> {}
 
+export const PFSFeeUpdate = t.readonly(
+  t.type({
+    type: t.literal(MessageType.PFS_FEE_UPDATE),
+    canonical_identifier: t.readonly(
+      t.type({
+        chain_identifier: UInt(32),
+        token_network_address: Address,
+        channel_identifier: UInt(32),
+      }),
+    ),
+    updating_participant: Address,
+    timestamp: t.string,
+    fee_schedule: t.type({
+      cap_fees: t.boolean,
+      // if not null, it should be an array of [tokenAmount, fee] tuples
+      imbalance_penalty: t.union([t.null, t.array(t.tuple([UInt(32), Int(32)]))]),
+      proportional: Int(32),
+      flat: Int(32),
+    }),
+  }),
+);
+export interface PFSFeeUpdate extends t.TypeOf<typeof PFSFeeUpdate> {}
+
+export const MonitorRequest = t.readonly(
+  t.type({
+    type: t.literal(MessageType.MONITOR_REQUEST),
+    balance_proof: t.type({
+      chain_id: UInt(32),
+      token_network_address: Address,
+      channel_identifier: UInt(32),
+      nonce: UInt(8),
+      balance_hash: Hash,
+      additional_hash: Hash,
+      signature: Signature,
+    }),
+    monitoring_service_contract_address: Address,
+    non_closing_participant: Address,
+    non_closing_signature: Signature,
+    reward_amount: UInt(32),
+  }),
+);
+export interface MonitorRequest extends t.TypeOf<typeof MonitorRequest> {}
+
 export const Message = t.union([
   Delivered,
   Processed,
@@ -251,6 +294,8 @@ export const Message = t.union([
   WithdrawConfirmation,
   WithdrawExpired,
   PFSCapacityUpdate,
+  PFSFeeUpdate,
+  MonitorRequest,
 ]);
 // prefer an explicit union to have the union of the interfaces, instead of the union of t.TypeOf's
 export type Message =
@@ -265,5 +310,7 @@ export type Message =
   | WithdrawRequest
   | WithdrawConfirmation
   | WithdrawExpired
-  | PFSCapacityUpdate;
+  | PFSCapacityUpdate
+  | PFSFeeUpdate
+  | MonitorRequest;
 export type EnvelopeMessage = LockedTransfer | RefundTransfer | Unlock | LockExpired;

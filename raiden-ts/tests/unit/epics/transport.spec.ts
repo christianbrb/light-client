@@ -1,11 +1,9 @@
-/* eslint-disable @typescript-eslint/no-explicit-any,@typescript-eslint/camelcase */
-jest.mock('matrix-js-sdk');
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { raidenEpicDeps, makeSignature, mockRTC } from '../mocks';
+import { epicFixtures } from '../fixtures';
 
 import { createClient } from 'matrix-js-sdk';
-
-import { patchVerifyMessage } from '../patches';
-patchVerifyMessage();
-
 import { of, timer, EMPTY, Observable } from 'rxjs';
 import { first, tap, takeUntil, toArray } from 'rxjs/operators';
 import { fakeSchedulers } from 'rxjs-marbles/jest';
@@ -19,6 +17,7 @@ import {
   matrixRoom,
   matrixSetup,
   matrixRoomLeave,
+  rtcChannel,
 } from 'raiden-ts/transport/actions';
 import { messageSend, messageReceived, messageGlobalSend } from 'raiden-ts/messages/actions';
 
@@ -40,15 +39,14 @@ import {
   deliveredEpic,
   matrixMessageGlobalSendEpic,
   matrixCleanMissingRoomsEpic,
+  rtcConnectEpic,
+  matrixUpdateCapsEpic,
 } from 'raiden-ts/transport/epics';
 import { MessageType, Delivered, Processed } from 'raiden-ts/messages/types';
 import { makeMessageId } from 'raiden-ts/transfers/utils';
 import { encodeJsonMessage, signMessage } from 'raiden-ts/messages/utils';
-
-import { epicFixtures } from '../fixtures';
-import { raidenEpicDeps, makeSignature } from '../mocks';
 import { ErrorCodes } from 'raiden-ts/utils/error';
-import { Signed } from 'raiden-ts/utils/types';
+import { Signed, Address } from 'raiden-ts/utils/types';
 import { Capabilities } from 'raiden-ts/constants';
 
 describe('transport epic', () => {
@@ -126,9 +124,7 @@ describe('transport epic', () => {
         }),
       );
 
-      const promise = initMatrixEpic(action$, state$, depsMock)
-        .pipe(first())
-        .toPromise();
+      const promise = initMatrixEpic(action$, state$, depsMock).pipe(first()).toPromise();
 
       setTimeout(() => action$.complete(), 10);
 
@@ -180,11 +176,9 @@ describe('transport epic', () => {
           },
         }),
         raidenConfigUpdate({ matrixServer }),
-      ].forEach(a => action$.next(a));
+      ].forEach((a) => action$.next(a));
 
-      const promise = initMatrixEpic(action$, state$, depsMock)
-        .pipe(first())
-        .toPromise();
+      const promise = initMatrixEpic(action$, state$, depsMock).pipe(first()).toPromise();
 
       setTimeout(() => action$.complete(), 10);
 
@@ -206,9 +200,7 @@ describe('transport epic', () => {
       const action$ = EMPTY as Observable<RaidenAction>,
         state$ = of(state);
       await expect(
-        initMatrixEpic(action$, state$, depsMock)
-          .pipe(first())
-          .toPromise(),
+        initMatrixEpic(action$, state$, depsMock).pipe(first()).toPromise(),
       ).resolves.toEqual(
         matrixSetup({
           server: `https://${matrixServer}`,
@@ -486,72 +478,6 @@ describe('transport epic', () => {
       );
     });
 
-    test('update without changing availability does not emit', async () => {
-      expect.assertions(1);
-
-      matrix.getUser.mockImplementationOnce(
-        userId =>
-          ({
-            userId,
-            presence: 'unavailable',
-            setDisplayName: jest.fn(),
-          } as any),
-      );
-
-      const promise = matrixPresenceUpdateEpic(action$, state$, depsMock)
-        .pipe(takeUntil(timer(50)))
-        .toPromise();
-
-      action$.next(matrixPresence.request(undefined, { address: partner }));
-      action$.next(
-        matrixPresence.success(
-          { userId: partnerUserId, available: true, ts: 123 },
-          { address: partner },
-        ),
-      );
-
-      matrix.emit('event', {
-        getType: () => 'm.presence',
-        getSender: () => partnerUserId,
-      });
-
-      await expect(promise).resolves.toBeUndefined();
-    });
-
-    test('cached displayName but invalid signature', async () => {
-      expect.assertions(1);
-      const action$ = of(
-          matrixPresence.request(undefined, { address: partner }),
-          matrixPresence.success(
-            { userId: partnerUserId, available: true, ts: 123 },
-            { address: partner },
-          ),
-        ),
-        state$ = of(state);
-
-      matrix.getUser.mockImplementationOnce(
-        userId =>
-          ({
-            userId,
-            presence: 'offline',
-            displayName: `partner_display_name`,
-            setDisplayName: jest.fn(),
-          } as any),
-      );
-      (verifyMessage as jest.Mock).mockReturnValueOnce(token);
-
-      const promise = matrixPresenceUpdateEpic(action$, state$, depsMock)
-        .pipe(takeUntil(timer(50)))
-        .toPromise();
-
-      matrix.emit('event', {
-        getType: () => 'm.presence',
-        getSender: () => partnerUserId,
-      });
-
-      await expect(promise).resolves.toBeUndefined();
-    });
-
     test('getProfileInfo error', async () => {
       expect.assertions(1);
       const action$ = of(
@@ -578,6 +504,45 @@ describe('transport epic', () => {
     });
   });
 
+  test('matrixUpdateCapsEpic', async () => {
+    expect.assertions(8);
+    action$.next(raidenConfigUpdate({ caps: { [Capabilities.NO_DELIVERY]: true } }));
+
+    // don't call on first replayed value from config$
+    await expect(
+      matrixUpdateCapsEpic(action$, state$, depsMock)
+        .pipe(takeUntil(timer(10)))
+        .toPromise(),
+    ).resolves.toBeUndefined();
+    expect(matrix.setAvatarUrl).not.toHaveBeenCalled();
+
+    // promise failure doesn't error observable
+    matrix.setAvatarUrl.mockRejectedValueOnce(new Error('failed'));
+    let promise = matrixUpdateCapsEpic(action$, state$, depsMock)
+      .pipe(takeUntil(timer(10)))
+      .toPromise();
+    action$.next(
+      raidenConfigUpdate({
+        caps: { [Capabilities.NO_DELIVERY]: true, [Capabilities.WEBRTC]: true },
+      }),
+    );
+    await expect(promise).resolves.toBeUndefined();
+    expect(matrix.setAvatarUrl).toHaveBeenCalledTimes(1);
+    // noReceive is dynamic
+    expect(matrix.setAvatarUrl).toHaveBeenCalledWith('noReceive,noDelivery,webRTC');
+
+    promise = matrixUpdateCapsEpic(action$, state$, depsMock).toPromise();
+    action$.next(
+      raidenConfigUpdate({
+        caps: { [Capabilities.NO_RECEIVE]: true, customCap: 'abc' },
+      }),
+    );
+    setTimeout(() => action$.complete(), 10);
+    await expect(promise).resolves.toBeUndefined();
+    expect(matrix.setAvatarUrl).toHaveBeenCalledTimes(2);
+    expect(matrix.setAvatarUrl).toHaveBeenCalledWith('noReceive,customCap="abc"');
+  });
+
   describe('matrixCreateRoomEpic', () => {
     test('success: concurrent messages create single room', async () => {
       expect.assertions(2);
@@ -585,7 +550,7 @@ describe('transport epic', () => {
       const promise = matrixCreateRoomEpic(action$, state$, depsMock)
         .pipe(
           // update state with action, to ensure serial handling knows about already created room
-          tap(action => state$.next(raidenReducer(state, action))),
+          tap((action) => state$.next(raidenReducer(state, action))),
           takeUntil(timer(50)),
         )
         .toPromise();
@@ -600,7 +565,7 @@ describe('transport epic', () => {
           { userId: partnerUserId, available: true, ts: 123 },
           { address: partner },
         ),
-      ].forEach(a => action$.next(a));
+      ].forEach((a) => action$.next(a));
 
       action$.complete();
 
@@ -680,9 +645,7 @@ describe('transport epic', () => {
       expect.assertions(3);
       const roomId = partnerRoomId;
 
-      const promise = matrixHandleInvitesEpic(action$, state$, depsMock)
-        .pipe(first())
-        .toPromise();
+      const promise = matrixHandleInvitesEpic(action$, state$, depsMock).pipe(first()).toPromise();
 
       action$.next(
         matrixPresence.success(
@@ -709,9 +672,7 @@ describe('transport epic', () => {
       expect.assertions(3);
       const roomId = partnerRoomId;
 
-      const promise = matrixHandleInvitesEpic(action$, state$, depsMock)
-        .pipe(first())
-        .toPromise();
+      const promise = matrixHandleInvitesEpic(action$, state$, depsMock).pipe(first()).toPromise();
 
       matrix.emit(
         'RoomMember.membership',
@@ -788,7 +749,7 @@ describe('transport epic', () => {
 
     test(
       'leave unknown rooms',
-      fakeSchedulers(advance => {
+      fakeSchedulers((advance) => {
         expect.assertions(3);
 
         action$.next(raidenConfigUpdate({ httpTimeout: 30e3 }));
@@ -815,7 +776,7 @@ describe('transport epic', () => {
 
     test(
       'do not leave discovery room',
-      fakeSchedulers(advance => {
+      fakeSchedulers((advance) => {
         expect.assertions(2);
 
         const roomId = `!discoveryRoomId:${matrixServer}`,
@@ -856,7 +817,7 @@ describe('transport epic', () => {
 
     test(
       'do not leave peers rooms',
-      fakeSchedulers(advance => {
+      fakeSchedulers((advance) => {
         expect.assertions(2);
 
         const roomId = partnerRoomId,
@@ -888,9 +849,7 @@ describe('transport epic', () => {
       const roomId = partnerRoomId,
         state$ = of(raidenReducer(state, matrixRoom({ roomId }, { address: partner })));
 
-      const promise = matrixCleanLeftRoomsEpic(EMPTY, state$, depsMock)
-        .pipe(first())
-        .toPromise();
+      const promise = matrixCleanLeftRoomsEpic(EMPTY, state$, depsMock).pipe(first()).toPromise();
 
       matrix.emit('Room.myMembership', { roomId }, 'leave');
 
@@ -955,7 +914,7 @@ describe('transport epic', () => {
         roomId,
         name: roomId,
         getMember: jest.fn(
-          userId =>
+          (userId) =>
             ({
               roomId,
               userId,
@@ -986,7 +945,7 @@ describe('transport epic', () => {
           { userId: partnerUserId, available: true, ts: Date.now() },
           { address: partner },
         ),
-      ].forEach(a => action$.next(a));
+      ].forEach((a) => action$.next(a));
       setTimeout(() => action$.complete(), 100);
 
       await expect(promise).resolves.toMatchObject(
@@ -1022,8 +981,7 @@ describe('transport epic', () => {
           { address: partner },
         ),
         messageSend.request({ message }, { address: partner, msgId: message }),
-      ].forEach(a => action$.next(a));
-      setTimeout(() => action$.complete(), 100);
+      ].forEach((a) => action$.next(a));
 
       expect(matrix.sendEvent).not.toHaveBeenCalled();
 
@@ -1067,7 +1025,7 @@ describe('transport epic', () => {
         roomId,
         name: roomId,
         getMember: jest.fn(
-          userId =>
+          (userId) =>
             ({
               roomId,
               userId,
@@ -1097,7 +1055,7 @@ describe('transport epic', () => {
           { address: partner },
         ),
         messageSend.request({ message }, { address: partner, msgId: message }),
-      ].forEach(a => action$.next(a));
+      ].forEach((a) => action$.next(a));
       setTimeout(() => action$.complete(), 100);
 
       await expect(promise).resolves.toMatchObject(
@@ -1488,5 +1446,255 @@ describe('transport epic', () => {
       expect.objectContaining({ body: text, msgtype: 'm.text' }),
       expect.anything(),
     );
+  });
+
+  describe('rtcConnectEpic', () => {
+    const createPartnerPresence = (available: boolean, webRtcCapable: boolean) =>
+      matrixPresence.success(
+        {
+          userId: partnerUserId,
+          available,
+          ts: Date.now(),
+          caps: { [Capabilities.WEBRTC]: webRtcCapable },
+        },
+        { address: partner },
+      );
+
+    let rtcConnection: ReturnType<typeof mockRTC>['rtcConnection'];
+    let rtcDataChannel: ReturnType<typeof mockRTC>['rtcDataChannel'];
+    let RTCPeerConnection: ReturnType<typeof mockRTC>['RTCPeerConnection'];
+    beforeEach(() => {
+      ({ rtcConnection, rtcDataChannel, RTCPeerConnection } = mockRTC());
+      action$.next(
+        raidenConfigUpdate({
+          httpTimeout: 300,
+          caps: { [Capabilities.NO_DELIVERY]: true, [Capabilities.WEBRTC]: true },
+        }),
+      );
+      matrix.getRoom.mockImplementation(
+        () =>
+          ({
+            roomId: partnerRoomId,
+            name: partnerRoomId,
+            getMember: jest.fn(() => ({
+              membership: 'join',
+              roomId: partnerRoomId,
+              userId: partnerUserId,
+            })),
+            getJoinedMembers: jest.fn(),
+            getCanonicalAlias: jest.fn(() => partnerRoomId),
+            getAliases: jest.fn(() => []),
+          } as any),
+      );
+    });
+    afterEach(() => {
+      RTCPeerConnection.mockRestore();
+    });
+
+    test('skip if no webrtc capability exists', async () => {
+      const promise = rtcConnectEpic(action$, state$, depsMock).toPromise();
+      action$.next(createPartnerPresence(false, false));
+      action$.next(createPartnerPresence(true, false));
+      setTimeout(() => action$.complete(), 100);
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    test('reset data channel if user goes offline in matrix', async () => {
+      const promise = rtcConnectEpic(action$, state$, depsMock).toPromise();
+      action$.next(createPartnerPresence(true, true));
+      action$.next(createPartnerPresence(false, true));
+      setTimeout(() => action$.complete(), 100);
+
+      await expect(promise).resolves.toEqual({
+        meta: { address: partner },
+        payload: undefined,
+        type: 'rtc/channel',
+      });
+    });
+
+    test('set up caller data channel and waits for partner to join room', async () => {
+      const promise = rtcConnectEpic(action$, state$, depsMock).toPromise();
+      action$.next(createPartnerPresence(true, true));
+      action$.next(matrixRoom({ roomId: userId }, { address: partner }));
+      action$.next(createPartnerPresence(false, true));
+      setTimeout(() => action$.complete(), 100);
+
+      await expect(promise).resolves.toEqual({
+        meta: { address: partner },
+        payload: undefined,
+        type: 'rtc/channel',
+      });
+    });
+
+    test('success callee, receive message & channel error', async () => {
+      expect.assertions(2);
+
+      // change partner to one with smaller address, to be the caller
+      partner = '0x0000000000000000000000000000000000000088' as Address;
+      partnerUserId = `@${partner.toLowerCase()}:${matrixServer}`;
+
+      const promise = rtcConnectEpic(action$, state$, depsMock)
+        .pipe(takeUntil(timer(1e3)), toArray())
+        .toPromise();
+
+      const msg = '{"type":"Delivered","delivered_message_identifier":"123456"}';
+
+      setTimeout(() => {
+        matrix.emit('event', {
+          getType: () => 'm.call.invite',
+          getSender: () => partnerUserId,
+          getContent: () => ({
+            call_id: `${partner}|${depsMock.address}`.toLowerCase(),
+            offer: 'offer',
+            lifetime: 86.4e6,
+          }),
+          getAge: () => 1,
+        });
+      }, 5);
+      setTimeout(() => {
+        rtcConnection.emit('datachannel', { channel: rtcDataChannel });
+      }, 15);
+      setTimeout(() => {
+        Object.assign(rtcDataChannel, { readyState: 'open' });
+        rtcDataChannel.emit('open', true);
+        rtcDataChannel.emit('message', { data: msg });
+      }, 20);
+      setTimeout(() => {
+        Object.assign(rtcDataChannel, { readyState: 'closed' });
+        rtcDataChannel.emit('error', { error: new Error('errored!') });
+        action$.next(
+          matrixPresence.success(
+            {
+              userId: partnerUserId,
+              available: false,
+              ts: Date.now(),
+            },
+            { address: partner },
+          ),
+        );
+      }, 50);
+
+      action$.next(matrixRoom({ roomId: partnerRoomId }, { address: partner }));
+      action$.next(
+        matrixPresence.success(
+          {
+            userId: partnerUserId,
+            available: true,
+            ts: Date.now(),
+            caps: { [Capabilities.WEBRTC]: true },
+          },
+          { address: partner },
+        ),
+      );
+
+      await expect(promise).resolves.toEqual(
+        expect.arrayContaining([
+          rtcChannel(rtcDataChannel, { address: partner }),
+          messageReceived(
+            {
+              text: expect.any(String),
+              ts: expect.any(Number),
+              message: expect.objectContaining({ type: MessageType.DELIVERED }),
+              userId: partnerUserId,
+              roomId: undefined,
+            },
+            { address: partner },
+          ),
+        ]),
+      );
+
+      expect(matrix.sendEvent).toHaveBeenCalledWith(
+        partnerRoomId,
+        'm.call.answer',
+        expect.objectContaining({ call_id: expect.any(String), answer: expect.anything() }),
+        expect.anything(),
+      );
+    });
+
+    test('success caller & candidates', async () => {
+      expect.assertions(4);
+
+      // change partner to one with higher address, to be the callee
+      partner = '0xFffFfFFF00000000000000000000000000000088' as Address;
+      partnerUserId = `@${partner.toLowerCase()}:${matrixServer}`;
+
+      const promise = rtcConnectEpic(action$, state$, depsMock)
+        .pipe(takeUntil(timer(200)), toArray())
+        .toPromise();
+
+      matrix.sendEvent.mockImplementation(async ({}, type: string, content: any) => {
+        if (type !== 'm.call.invite') return;
+        setTimeout(() => {
+          matrix.emit('event', {
+            getType: () => 'm.call.candidates',
+            getSender: () => partnerUserId,
+            getContent: () => ({
+              call_id: content.call_id,
+              candidates: ['partnerCandidateFail', 'partnerCandidate'],
+            }),
+            getAge: () => 1,
+          });
+          // emit 'icecandidate' to be sent to partner
+          rtcConnection.emit('icecandidate', { candidate: 'myCandidate' });
+          rtcConnection.emit('icecandidate', { candidate: null });
+        }, 10);
+
+        setTimeout(() => {
+          matrix.emit('event', {
+            getType: () => 'm.call.answer',
+            getSender: () => partnerUserId,
+            getContent: () => ({
+              call_id: content.call_id,
+              answer: 'answer',
+              lifetime: 86.4e6,
+            }),
+            getAge: () => 1,
+          });
+          Object.assign(rtcDataChannel, { readyState: 'open' });
+          rtcDataChannel.emit('open', true);
+        }, 40);
+        setTimeout(() => {
+          rtcDataChannel.emit('close', true);
+        }, 70);
+      });
+      rtcConnection.addIceCandidate.mockRejectedValueOnce(new Error('addIceCandidate failed'));
+
+      action$.next(matrixRoom({ roomId: partnerRoomId }, { address: partner }));
+      action$.next(
+        matrixPresence.success(
+          {
+            userId: partnerUserId,
+            available: true,
+            ts: Date.now(),
+            caps: { [Capabilities.WEBRTC]: true },
+          },
+          { address: partner },
+        ),
+      );
+
+      await expect(promise).resolves.toEqual(
+        expect.arrayContaining([
+          rtcChannel(rtcDataChannel, { address: partner }),
+          rtcChannel(undefined, { address: partner }),
+        ]),
+      );
+
+      expect(matrix.sendEvent).toHaveBeenCalledWith(
+        partnerRoomId,
+        'm.call.invite',
+        expect.objectContaining({ call_id: expect.any(String), offer: expect.anything() }),
+        expect.anything(),
+      );
+
+      // assert candidates
+      expect(rtcConnection.addIceCandidate).toHaveBeenCalledWith('partnerCandidate');
+      expect(matrix.sendEvent).toHaveBeenCalledWith(
+        partnerRoomId,
+        'm.call.candidates',
+        expect.objectContaining({ call_id: expect.any(String), candidates: ['myCandidate'] }),
+        expect.anything(),
+      );
+    });
   });
 });

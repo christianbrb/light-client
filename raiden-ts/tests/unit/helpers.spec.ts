@@ -1,7 +1,7 @@
 import { Network } from 'ethers/utils';
 import { JsonRpcProvider, JsonRpcSigner } from 'ethers/providers';
 
-import { getContracts, getSigner } from 'raiden-ts/helpers';
+import { getContracts, getSigner, isValidUrl } from 'raiden-ts/helpers';
 import { Wallet } from 'ethers';
 import Raiden from 'raiden-ts/raiden';
 
@@ -22,9 +22,14 @@ describe('getContracts', () => {
     expect(getContracts(goerliNetwork)).toHaveProperty('UserDeposit');
   });
 
-  test('throw if network is not supported', async () => {
+  test('supports mainnet', async () => {
     const mainNetwork = { name: 'homestead', chainId: 1 } as Network;
-    expect(() => getContracts(mainNetwork)).toThrow();
+    expect(() => getContracts(mainNetwork)).not.toThrow();
+  });
+
+  test('throw if network is not supported', async () => {
+    const privateNetwork = { name: 'private-chain', chainId: 666 } as Network;
+    expect(() => getContracts(privateNetwork)).toThrow();
   });
 });
 
@@ -90,4 +95,13 @@ describe('Raiden Versions', () => {
   test('Returns raiden contract version', () => {
     expect(Raiden.contractVersion).toMatch(someVersion);
   });
+});
+
+test('accept PFS http addresses on non-production environments', () => {
+  const nodeEnv = process.env.NODE_ENV;
+  const httpUrl = 'http://pfs.dev';
+  expect(isValidUrl(httpUrl)).toBe(true);
+  process.env.NODE_ENV = 'production';
+  expect(isValidUrl(httpUrl)).toBe(false);
+  process.env.NODE_ENV = nodeEnv;
 });

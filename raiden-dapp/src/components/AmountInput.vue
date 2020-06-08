@@ -1,8 +1,6 @@
 <template>
   <fieldset class="amount-input">
-    <div class="amount-input__label">
-      {{ label }}
-    </div>
+    <div class="amount-input__label">{{ label }}</div>
     <v-text-field
       id="amount"
       ref="input"
@@ -35,13 +33,13 @@ export default class AmountInput extends Vue {
   label?: string;
   @Prop({})
   disabled!: boolean;
-  @Prop({ default: '0.00' })
+  @Prop({ required: true })
   value!: string;
   @Prop()
   token?: Token;
   @Prop({ default: false, type: Boolean })
   limit!: boolean;
-  @Prop({ default: '0.0', type: String })
+  @Prop({ default: '', type: String })
   placeholder!: string;
   @Prop({ required: false, default: () => Zero })
   max!: BigNumber;
@@ -75,7 +73,7 @@ export default class AmountInput extends Vue {
       !this.limit ||
       (v && this.hasEnoughBalance(v, this.max)) ||
       this.$parent.$t('amount-input.error.not-enough-funds', {
-        funds: BalanceUtils.toUnits(this.max, this.token!.decimals || 18),
+        funds: BalanceUtils.toUnits(this.max, this.token!.decimals ?? 18),
         symbol: this.token!.symbol
       })
   ];
@@ -83,7 +81,7 @@ export default class AmountInput extends Vue {
   private noDecimalOverflow(v: string) {
     return (
       AmountInput.numericRegex.test(v) &&
-      !BalanceUtils.decimalsOverflow(v, this.token!.decimals || 18)
+      !BalanceUtils.decimalsOverflow(v, this.token!.decimals ?? 18)
     );
   }
 
@@ -101,8 +99,12 @@ export default class AmountInput extends Vue {
     }
   }
 
-  @Watch('value')
-  onChange(value: string) {
+  @Watch('value', { immediate: true })
+  onChange(value: string | undefined) {
+    if (value === undefined) {
+      return;
+    }
+
     this.updateIfValid(value);
   }
 
@@ -208,7 +210,6 @@ $header-vertical-margin-mobile: 2rem;
       line-height: 16px;
 
       &__wrapper {
-        height: 25px;
         display: flex;
         flex-direction: column;
         align-items: flex-start;
@@ -222,6 +223,7 @@ $header-vertical-margin-mobile: 2rem;
       }
 
       &__message {
+        color: $secondary-text-color;
         line-height: 1.1;
       }
     }
@@ -232,7 +234,7 @@ $header-vertical-margin-mobile: 2rem;
     color: $text-color;
     font-weight: 500;
     font-size: 14px;
-    line-height: 27px;
+    line-height: 21px;
     text-align: center;
   }
 

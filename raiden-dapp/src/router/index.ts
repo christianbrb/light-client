@@ -29,7 +29,7 @@ const router = new Router({
       meta: {
         title: 'Transfer'
       },
-      component: () => import('../views/Transfer.vue')
+      component: () => import('../views/TransferRoute.vue')
     },
     {
       path: '/transfer/:token/:target',
@@ -37,7 +37,7 @@ const router = new Router({
       meta: {
         title: 'Transfer'
       },
-      component: () => import('../views/TransferSteps.vue')
+      component: () => import('../views/TransferStepsRoute.vue')
     },
     {
       path: '/connect',
@@ -45,7 +45,7 @@ const router = new Router({
       meta: {
         title: 'Select Token'
       },
-      component: () => import('../views/SelectToken.vue')
+      component: () => import('../views/SelectTokenRoute.vue')
     },
     {
       path: '/connect/:token',
@@ -53,7 +53,7 @@ const router = new Router({
       meta: {
         title: 'Select Hub'
       },
-      component: () => import('../views/SelectHub.vue')
+      component: () => import('../views/SelectHubRoute.vue')
     },
     {
       path: '/connect/:token/:partner',
@@ -61,7 +61,7 @@ const router = new Router({
       meta: {
         title: 'Open Channel'
       },
-      component: () => import('../views/OpenChannel.vue')
+      component: () => import('../views/OpenChannelRoute.vue')
     },
     {
       path: '/channels/:token',
@@ -69,11 +69,27 @@ const router = new Router({
       meta: {
         title: 'Channels'
       },
-      component: () => import('../views/Channels.vue')
+      component: () => import('../views/ChannelsRoute.vue')
     },
     {
-      path: '/general',
-      name: RouteNames.GENERAL,
+      path: '/notifications',
+      name: RouteNames.NOTIFICATIONS,
+      beforeEnter: (to, from, next) => {
+        if (from.name === null) {
+          next({
+            name: RouteNames.HOME
+          });
+        } else if (to.matched.length) {
+          to.matched[0].components.default = from.matched[0].components.default;
+          to.matched[0].components.notifications = () =>
+            import('../views/NotificationPanel.vue');
+        }
+        next();
+      }
+    },
+    {
+      path: '/account',
+      name: RouteNames.ACCOUNT,
       beforeEnter: (to, from, next) => {
         // Remembers the route that was visited just before the General view is opened and
         // then loads the General view in a separate <router-view>. The last visited route
@@ -85,26 +101,58 @@ const router = new Router({
         } else if (to.matched.length) {
           to.matched[0].components.default = from.matched[0].components.default;
           to.matched[0].components.modal = () =>
-            import('../views/GeneralDialog.vue');
+            import('../views/AccountRoute.vue');
         }
         next();
       },
       children: [
         {
-          path: 'general-home',
-          name: RouteNames.GENERAL_HOME,
+          path: '/',
+          name: RouteNames.ACCOUNT_ROOT,
           meta: {
-            title: 'General'
+            title: 'Account'
           },
-          component: () => import('../views/GeneralHome.vue')
+          component: () => import('../views/account/AccountRoot.vue')
         },
         {
-          path: 'backup-state',
-          name: RouteNames.BACKUP_STATE,
+          path: 'backup',
+          name: RouteNames.ACCOUNT_BACKUP,
           meta: {
             title: 'Backup State'
           },
-          component: () => import('../views/BackupState.vue')
+          component: () => import('../views/account/BackupState.vue')
+        },
+        {
+          path: 'raiden',
+          name: RouteNames.ACCOUNT_RAIDEN,
+          meta: {
+            title: 'Raiden Account'
+          },
+          component: () => import('../views/account/RaidenAccount.vue')
+        },
+        {
+          path: 'settings',
+          name: RouteNames.ACCOUNT_SETTINGS,
+          meta: {
+            title: 'Settings'
+          },
+          component: () => import('../views/account/Settings.vue')
+        },
+        {
+          path: 'withdrawal',
+          name: RouteNames.ACCOUNT_WITHDRAWAL,
+          meta: {
+            title: 'Withdrawal'
+          },
+          component: () => import('../views/account/WithdrawalRoute.vue')
+        },
+        {
+          path: 'udc',
+          name: RouteNames.ACCOUNT_UDC,
+          meta: {
+            title: 'UDC'
+          },
+          component: () => import('../views/account/UDC.vue')
         }
       ]
     }

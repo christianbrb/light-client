@@ -6,7 +6,7 @@ import Vue from 'vue';
 
 Vue.use(Vuetify);
 
-describe('NoAccessScreen.vue', () => {
+describe('NoAccessMessage.vue', () => {
   let vuetify: typeof Vuetify;
 
   function createWrapper(reason: DeniedReason) {
@@ -56,5 +56,14 @@ describe('NoAccessScreen.vue', () => {
         .map(text => text.trim())
         .join(' ')
     ).toEqual('no-access.sdk-initialization-failure');
+  });
+
+  test('invalid old state', () => {
+    const wrapper = createWrapper(DeniedReason.RDN_STATE_MIGRATION);
+    const invalidOldStateMessage = wrapper.find('span');
+
+    expect(invalidOldStateMessage.text()).toEqual(
+      'no-access.rdn-state-migration'
+    );
   });
 });

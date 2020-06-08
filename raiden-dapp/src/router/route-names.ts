@@ -6,7 +6,12 @@ export enum RouteNames {
   HOME = 'home',
   CHANNELS = 'channels',
   OPEN_CHANNEL = 'open-channel',
-  GENERAL = 'general',
-  GENERAL_HOME = 'general-home',
-  BACKUP_STATE = 'backup-state'
+  ACCOUNT = 'account',
+  ACCOUNT_ROOT = 'account-root',
+  ACCOUNT_BACKUP = 'account-backup',
+  ACCOUNT_RAIDEN = 'account-raiden',
+  ACCOUNT_SETTINGS = 'account-settings',
+  ACCOUNT_WITHDRAWAL = 'account-withdrawal',
+  ACCOUNT_UDC = 'account-udc',
+  NOTIFICATIONS = 'notifications'
 }

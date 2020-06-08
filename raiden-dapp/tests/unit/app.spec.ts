@@ -1,74 +1,70 @@
+jest.mock('vue-router');
 jest.mock('@/services/raiden-service');
-
+import Mocked = jest.Mocked;
 import { shallowMount, Wrapper } from '@vue/test-utils';
-import { DeniedReason } from '@/model/types';
-import App from '@/App.vue';
-import RaidenService from '@/services/raiden-service';
 import Vue from 'vue';
-import Vuex from 'vuex';
-import Vuetify from 'vuetify';
 import VueRouter from 'vue-router';
-import flushPromises from 'flush-promises';
+import Vuex from 'vuex';
 import store from '@/store/index';
+import Vuetify from 'vuetify';
+import RaidenService from '@/services/raiden-service';
+import App from '@/App.vue';
+import { Capabilities } from 'raiden-ts';
 
+Vue.use(VueRouter);
 Vue.use(Vuex);
 Vue.use(Vuetify);
-Vue.use(VueRouter);
 
 describe('App.vue', () => {
+  let wrapper: Wrapper<App>;
+  let vuetify: typeof Vuetify;
+  let router: Mocked<VueRouter>;
   let $raiden: RaidenService;
 
   beforeEach(() => {
+    vuetify = new Vuetify();
+    router = new VueRouter() as Mocked<VueRouter>;
+    router.push = jest.fn().mockResolvedValue(null);
     $raiden = new RaidenService(store);
-    $raiden.connect = jest.fn();
     $raiden.disconnect = jest.fn();
-  });
 
-  describe('call connect on component creation and disconnect on destruction', async () => {
-    let wrapper: Wrapper<App>;
-
-    beforeEach(() => {
-      wrapper = shallowMount(App, {
-        store,
-        mocks: {
-          $raiden: $raiden,
-          $t: (msg: string) => msg
-        }
-      });
-    });
-
-    test('call without subkey', async () => {
-      await (wrapper.vm as any).connect();
-      await flushPromises();
-      wrapper.vm.$destroy();
-
-      expect($raiden.connect).toHaveBeenCalledTimes(1);
-      expect($raiden.disconnect).toHaveBeenCalledTimes(1);
-    });
-
-    test('call with subkey', async () => {
-      await (wrapper.vm as any).connect(true);
-      await flushPromises();
-      wrapper.vm.$destroy();
-
-      expect($raiden.connect).toHaveBeenCalledTimes(1);
-      expect($raiden.disconnect).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  test('connect can be called without error after failing initially', async () => {
-    store.commit('accessDenied', DeniedReason.NO_ACCOUNT);
-    const wrapper = shallowMount(App, {
+    wrapper = shallowMount(App, {
+      vuetify,
       store,
+      stubs: ['router-view', 'v-dialog'],
       mocks: {
+        $router: router,
         $raiden: $raiden,
         $t: (msg: string) => msg
       }
     });
+  });
 
-    await (wrapper.vm as any).connect();
+  test('displays privacy policy', () => {
+    const privacyPolicy = wrapper.find('.policy');
 
-    await flushPromises();
-    expect(store.state.accessDenied).toEqual(DeniedReason.UNDEFINED);
+    expect(privacyPolicy.text()).toBe('application.privacy-policy');
+  });
+
+  test('disconnects on destruction', () => {
+    wrapper.vm.$destroy();
+
+    expect($raiden.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("show ReceivingDiabled dialog if can't receive", async () => {
+    expect.assertions(2);
+
+    store.commit('updateConfig', {
+      caps: { [Capabilities.NO_RECEIVE]: false }
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.vm.$data.showReceivingDisabled).toBe(false);
+
+    store.commit('updateConfig', {
+      caps: { [Capabilities.NO_RECEIVE]: true }
+    });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.vm.$data.showReceivingDisabled).toBe(true);
   });
 });

@@ -1,16 +1,18 @@
 import RaidenService from '@/services/raiden-service';
-import { RaidenChannels, RaidenTransfer } from 'raiden-ts';
+import { RaidenChannels, RaidenTransfer, RaidenConfig } from 'raiden-ts';
 import { DeniedReason, Token, Presences } from '@/model/types';
 import { Network } from 'ethers/utils';
 
 export type Tokens = { [token: string]: Token };
-export type Transfers = { [secretHash: string]: RaidenTransfer };
+export type Transfers = { [key: string]: RaidenTransfer };
 export type ChannelAction = 'close' | 'deposit' | 'settle';
+export type Settings = { [setting: string]: boolean | number | string };
 
 export interface RootState {
   loading: boolean;
   defaultAccount: string;
   accountBalance: string;
+  raidenAccountBalance: string;
   providerDetected: boolean;
   accessDenied: DeniedReason;
   channels: RaidenChannels;
@@ -18,6 +20,9 @@ export interface RootState {
   network: Network;
   presences: Presences;
   transfers: Transfers;
+  stateBackup: string;
+  settings: Settings;
+  config: Partial<RaidenConfig>;
 }
 
 declare global {

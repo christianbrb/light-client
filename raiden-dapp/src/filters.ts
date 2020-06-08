@@ -31,21 +31,25 @@ export default class Filters {
   }
 
   static displayFormat(amount: BigNumber, decimals?: number): string {
-    const units = BalanceUtils.toUnits(amount, decimals || 18);
+    const units = BalanceUtils.toUnits(amount, decimals ?? 18);
     const deposit = parseFloat(units);
     if (deposit === 0) {
-      return '0.0';
+      return decimals === 0 ? '0' : '0.0';
     } else if (deposit < 0.000001) {
       return '<0.000001';
     } else {
-      const [integerPart, decimalPart] = split(units, '.');
+      return Filters.formatValue(units, decimals);
+    }
+  }
 
-      if (decimalPart && decimalPart.length > 6) {
-        let newDecimal = decimalPart.substring(0, 6);
-        return `≈${integerPart}.${newDecimal}`;
-      } else {
-        return units;
-      }
+  private static formatValue(units: string, decimals: number | undefined) {
+    const [integerPart, decimalPart] = split(units, '.');
+
+    if (decimalPart && decimalPart.length > 6) {
+      const newDecimal = decimalPart.substring(0, 6);
+      return `≈${integerPart}.${newDecimal}`;
+    } else {
+      return decimals === 0 ? integerPart : units;
     }
   }
 
@@ -54,7 +58,13 @@ export default class Filters {
   }
 
   static toUnits = (wei: BigNumber, decimals?: number) =>
-    BalanceUtils.toUnits(wei, decimals || 18);
+    BalanceUtils.toUnits(wei, decimals ?? 18);
+
+  static formatDate = (value: Date): string => {
+    return `${new Intl.DateTimeFormat('en-US').format(
+      value
+    )} ${value.toLocaleTimeString('en-US')}`;
+  };
 }
 
 Vue.filter('truncate', Filters.truncate);
@@ -63,3 +73,4 @@ Vue.filter('upper', Filters.upper);
 Vue.filter('displayFormat', Filters.displayFormat);
 Vue.filter('capitalizeFirst', Filters.capitalizeFirst);
 Vue.filter('toUnits', Filters.toUnits);
+Vue.filter('formatDate', Filters.formatDate);

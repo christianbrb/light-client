@@ -1,9 +1,7 @@
-/* eslint-disable @typescript-eslint/camelcase */
 import { timer } from 'rxjs';
 import { first, filter, takeUntil } from 'rxjs/operators';
-import { Zero } from 'ethers/constants';
+import { Zero, MaxUint256 } from 'ethers/constants';
 import { parseEther, parseUnits, bigNumberify, BigNumber, keccak256, Network } from 'ethers/utils';
-import { get } from 'lodash';
 
 import { TestProvider } from './provider';
 import { MockStorage, MockMatrixRequestFn } from './mocks';
@@ -40,6 +38,7 @@ import { matrixSetup } from 'raiden-ts/transport/actions';
 import { losslessStringify } from 'raiden-ts/utils/data';
 import { ServiceRegistryFactory } from 'raiden-ts/contracts/ServiceRegistryFactory';
 import { ErrorCodes } from 'raiden-ts/utils/error';
+import { channelKey } from 'raiden-ts/channels/utils';
 
 describe('Raiden', () => {
   const provider = new TestProvider();
@@ -83,9 +82,9 @@ describe('Raiden', () => {
     raiden.action$
       .pipe(
         filter(isActionOf(ConfirmableActions)),
-        filter(a => a.payload.confirmed === undefined),
+        filter((a) => a.payload.confirmed === undefined),
       )
-      .subscribe(a =>
+      .subscribe((a) =>
         provider.mineUntil(a.payload.txBlock + raiden.config.confirmationBlocks + 1),
       );
     return raiden;
@@ -216,14 +215,11 @@ describe('Raiden', () => {
             {
               network,
               contractsInfo: {
-                // eslint-disable-next-line @typescript-eslint/camelcase
                 TokenNetworkRegistry: { address: token as Address, block_number: 0 },
-                // eslint-disable-next-line @typescript-eslint/camelcase
                 ServiceRegistry: { address: partner as Address, block_number: 1 },
-                // eslint-disable-next-line @typescript-eslint/camelcase
                 UserDeposit: { address: partner as Address, block_number: 2 },
-                // eslint-disable-next-line @typescript-eslint/camelcase
                 SecretRegistry: { address: partner as Address, block_number: 3 },
+                MonitoringService: { address: partner as Address, block_number: 3 },
               },
               address: accounts[1] as Address,
             },
@@ -315,7 +311,11 @@ describe('Raiden', () => {
 
   describe('getUDCCapacity', () => {
     test('no balance', async () => {
-      expect.assertions(1);
+      expect.assertions(3);
+      // initial high, to avoid it interferring with caps[Capabilities.NO_RECEIVE]
+      await expect(raiden.getUDCCapacity()).resolves.toEqual(MaxUint256);
+      await expect(raiden.userDepositTokenAddress()).resolves.toMatch(/^0x/);
+      // should be updated soonish
       await expect(raiden.getUDCCapacity()).resolves.toEqual(Zero);
     });
 
@@ -422,11 +422,8 @@ describe('Raiden', () => {
       await expect(
         raiden1.channels$
           .pipe(
-            filter(
-              channels => get(channels, [token, raiden.address, 'state']) === ChannelState.open,
-            ),
-            filter(channels => !!get(channels, [token, raiden.address, 'partnerDeposit'])),
-            filter(channels => get(channels, [token, raiden.address, 'partnerDeposit']).gt(0)),
+            filter((channels) => channels[token]?.[raiden.address]?.state === ChannelState.open),
+            filter((channels) => channels[token]?.[raiden.address]?.partnerDeposit?.gt?.(0)),
             first(),
           )
           .toPromise(), // resolves on first emitted value which passes all filters above
@@ -446,20 +443,15 @@ describe('Raiden', () => {
 
       // wait for raiden1 to pick up main tokenNetwork channel
       await expect(
-        raiden1.state$
-          .pipe(first(state => !!get(state.channels, [tokenNetwork, raiden.address])))
+        raiden1.channels$
+          .pipe(first((channels) => !!channels[token]?.[raiden.address]))
           .toPromise(),
       ).resolves.toMatchObject({
-        tokens: {
-          [token]: tokenNetwork,
-        },
-        channels: {
-          [tokenNetwork]: { [raiden.address]: { state: ChannelState.open } },
-        },
+        [token]: { [raiden.address]: { state: ChannelState.open } },
       });
 
       let raidenState: RaidenState | undefined;
-      raiden.state$.subscribe(state => (raidenState = state));
+      raiden.state$.subscribe((state) => (raidenState = state));
       raiden.stop();
       expect(raidenState!.tokens).toEqual({ [token]: tokenNetwork });
       // expect & save block when raiden was stopped
@@ -485,7 +477,7 @@ describe('Raiden', () => {
 
       raidenState = undefined;
       raiden = await createRaiden(0, storage);
-      raiden.state$.subscribe(state => (raidenState = state));
+      raiden.state$.subscribe((state) => (raidenState = state));
       raiden.start();
 
       // ensure after hot boot, state is rehydrated and contains (only) previous token
@@ -497,28 +489,21 @@ describe('Raiden', () => {
 
       // wait token & channel on it to be fetched, even if it happened while we were offline
       await expect(
-        raiden.state$
-          .pipe(
-            filter(state => state.tokens[newToken] === newTokenNetwork),
-            first(state => !!get(state.channels, [newTokenNetwork, partner])),
-          )
-          .toPromise(),
+        raiden.channels$.pipe(first((channels) => !!channels[newToken]?.[partner])).toPromise(),
       ).resolves.toMatchObject({
-        tokens: {
-          [token]: tokenNetwork,
-          [newToken]: newTokenNetwork,
+        // test edge case 1: channel closed at stop block is picked up correctly
+        [token]: {
+          [partner]: { state: ChannelState.closed, closeBlock },
         },
-        channels: {
-          // test edge case 1: channel closed at stop block is picked up correctly
-          [tokenNetwork]: {
-            [partner]: { state: ChannelState.closed, closeBlock },
-          },
-          // test edge case 2: channel opened at restart block is picked up correctly
-          [newTokenNetwork]: { [partner]: { state: ChannelState.open, openBlock: restartBlock } },
-        },
+        // test edge case 2: channel opened at restart block is picked up correctly
+        [newToken]: { [partner]: { state: ChannelState.open, openBlock: restartBlock } },
       });
       // test sync state$ subscribe
-      expect(get(raidenState!.channels, [newTokenNetwork, partner])).toBeDefined();
+      expect(
+        raidenState!.channels[
+          channelKey({ tokenNetwork: newTokenNetwork as Address, partner: partner as Address })
+        ],
+      ).toBeDefined();
     });
   });
 
@@ -587,7 +572,7 @@ describe('Raiden', () => {
       await provider.mine(config.settleTimeout! + 1);
       await expect(
         raiden.channels$
-          .pipe(first(c => c[token]?.[partner]?.state === ChannelState.settleable))
+          .pipe(first((c) => c[token]?.[partner]?.state === ChannelState.settleable))
           .toPromise(),
       ).resolves.toMatchObject({
         [token]: {
@@ -601,9 +586,7 @@ describe('Raiden', () => {
         },
       });
       await expect(raiden.settleChannel(token, partner)).resolves.toMatch(/^0x/);
-      await expect(raiden.channels$.pipe(first()).toPromise()).resolves.toEqual({
-        [token]: {},
-      });
+      await expect(raiden.channels$.pipe(first()).toPromise()).resolves.toEqual({});
     }, 90e3);
   });
 
@@ -628,7 +611,7 @@ describe('Raiden', () => {
       expect.assertions(4);
 
       const promise = raiden.events$
-        .pipe(first(value => tokenMonitored.is(value) && !!value.payload.fromBlock))
+        .pipe(first((value) => tokenMonitored.is(value) && !!value.payload.fromBlock))
         .toPromise();
 
       // deploy a new token & tokenNetwork
@@ -638,7 +621,7 @@ describe('Raiden', () => {
       await expect(
         raiden.state$
           .pipe(
-            filter(state => !!state.tokens?.[token]),
+            filter((state) => !!state.tokens?.[token]),
             takeUntil(timer(10)),
           )
           .toPromise(),
@@ -661,7 +644,7 @@ describe('Raiden', () => {
       const raiden1 = await createRaiden(partner, undefined);
 
       const promise1 = raiden1.events$
-        .pipe(first(value => tokenMonitored.is(value) && !!value.payload.fromBlock))
+        .pipe(first((value) => tokenMonitored.is(value) && !!value.payload.fromBlock))
         .toPromise();
 
       raiden1.start();
@@ -794,7 +777,10 @@ describe('Raiden', () => {
         await raiden1.state$
           .pipe(
             first(
-              state => state.channels[tokenNetwork]?.[raiden.address]?.state === ChannelState.open,
+              (state) =>
+                state.channels[
+                  channelKey({ tokenNetwork: tokenNetwork as Address, partner: raiden.address })
+                ]?.state === ChannelState.open,
             ),
           )
           .toPromise();
@@ -804,7 +790,7 @@ describe('Raiden', () => {
           available: true,
           ts: expect.any(Number),
         });
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       });
 
       afterEach(() => raiden1.stop());
@@ -820,14 +806,14 @@ describe('Raiden', () => {
       test('success: direct route', async () => {
         expect.assertions(4);
 
-        const transfers: { [h: string]: RaidenTransfer } = {};
-        raiden.transfers$.subscribe(t => (transfers[t.secrethash] = t));
+        const transfers: { [k: string]: RaidenTransfer } = {};
+        raiden.transfers$.subscribe((t) => (transfers[t.key] = t));
 
-        const secrethash = await raiden.transfer(token, partner, 23);
-        expect(secrethash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+        const key = await raiden.transfer(token, partner, 23);
+        expect(key).toMatch(/^sent:0x[0-9a-fA-F]{64}$/);
 
-        expect(secrethash in transfers).toBe(true);
-        expect(transfers[secrethash].status).toBe(RaidenTransferStatus.pending);
+        expect(key in transfers).toBe(true);
+        expect(transfers[key].status).toBe(RaidenTransferStatus.pending);
       });
 
       test('success: auto pfs route', async () => {
@@ -851,7 +837,7 @@ describe('Raiden', () => {
           available: true,
           ts: expect.any(Number),
         });
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
         // auto pfs mode
         raiden.updateConfig({ pfs: '' });
@@ -875,12 +861,9 @@ describe('Raiden', () => {
         const result = {
           result: [
             // first returned route is invalid and should be filtered
-            // eslint-disable-next-line @typescript-eslint/camelcase
             { path: [tokenNetwork, target], estimated_fee: 0 },
-            // eslint-disable-next-line @typescript-eslint/camelcase
             { path: [partner, target], estimated_fee: 0 },
           ],
-          // eslint-disable-next-line @typescript-eslint/camelcase
           feedback_token: '0xfeedback',
         };
         fetch.mockResolvedValueOnce({
@@ -890,17 +873,17 @@ describe('Raiden', () => {
           text: jest.fn(async () => losslessStringify(result)),
         });
 
-        const transfers: { [h: string]: RaidenTransfer } = {};
-        raiden.transfers$.subscribe(t => (transfers[t.secrethash] = t));
+        const transfers: { [k: string]: RaidenTransfer } = {};
+        raiden.transfers$.subscribe((t) => (transfers[t.key] = t));
 
-        const secrethash = await raiden.transfer(token, target, 23);
-        expect(secrethash).toMatch(/^0x[0-9a-fA-F]{64}$/);
+        const key = await raiden.transfer(token, target, 23);
+        expect(key).toMatch(/^sent:0x[0-9a-fA-F]{64}$/);
 
-        expect(secrethash in transfers).toBe(true);
-        expect(transfers[secrethash].status).toBe(RaidenTransferStatus.pending);
+        expect(key in transfers).toBe(true);
+        expect(transfers[key].status).toBe(RaidenTransferStatus.pending);
 
         // transfer metadata contains the actual used routes (removing invalid ones)
-        expect(transfers[secrethash].metadata).toEqual({
+        expect(transfers[key].metadata).toEqual({
           routes: [{ route: [partner, target] }],
         });
 
@@ -1005,7 +988,7 @@ describe('Raiden', () => {
         available: true,
         ts: expect.any(Number),
       });
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
       raiden.updateConfig({ pfs: pfsUrl });
     });
@@ -1037,12 +1020,9 @@ describe('Raiden', () => {
       const result = {
         result: [
           // first returned route is invalid and should be filtered
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [tokenNetwork, target], estimated_fee: 0 },
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [raiden.address, partner, target], estimated_fee: 0 },
         ],
-        // eslint-disable-next-line @typescript-eslint/camelcase
         feedback_token: '0xfeedback',
       };
       fetch.mockResolvedValueOnce({
@@ -1098,12 +1078,9 @@ describe('Raiden', () => {
       const result = {
         result: [
           // first returned route is invalid and should be filtered
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [tokenNetwork, target], estimated_fee: 0 },
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [raiden.address, partner, target], estimated_fee: 0 },
         ],
-        // eslint-disable-next-line @typescript-eslint/camelcase
         feedback_token: '0xfeedback',
       };
       fetch.mockResolvedValueOnce({
@@ -1155,12 +1132,9 @@ describe('Raiden', () => {
       const result = {
         result: [
           // first returned route is invalid and should be filtered
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [tokenNetwork, target], estimated_fee: 0 },
-          // eslint-disable-next-line @typescript-eslint/camelcase
           { path: [raiden.address, partner, target], estimated_fee: 0 },
         ],
-        // eslint-disable-next-line @typescript-eslint/camelcase
         feedback_token: '0xfeedback',
       };
       fetch.mockResolvedValueOnce({
@@ -1235,7 +1209,7 @@ describe('Raiden', () => {
   });
 
   test('subkey', async () => {
-    expect.assertions(28);
+    expect.assertions(30);
     const sub = await createRaiden(0, storage, true);
 
     const subStarted = sub.action$.pipe(filter(isActionOf(matrixSetup)), first()).toPromise();
@@ -1278,7 +1252,7 @@ describe('Raiden', () => {
     let closeTx = await provider.getTransaction(closeTxHash);
     await provider.mineUntil(closeTx.blockNumber! + config.settleTimeout! + 1);
     await sub.channels$
-      .pipe(first(c => c[token]?.[partner]?.state === ChannelState.settleable))
+      .pipe(first((c) => c[token]?.[partner]?.state === ChannelState.settleable))
       .toPromise();
     await expect(sub.settleChannel(token, partner)).resolves.toMatch(/^0x/);
 
@@ -1312,7 +1286,7 @@ describe('Raiden', () => {
 
     await provider.mineUntil(closeTx.blockNumber! + config.settleTimeout! + 1);
     await sub.channels$
-      .pipe(first(c => c[token]?.[partner]?.state === ChannelState.settleable))
+      .pipe(first((c) => c[token]?.[partner]?.state === ChannelState.settleable))
       .toPromise();
     await expect(sub.settleChannel(token, partner)).resolves.toMatch(/^0x/);
 
@@ -1322,9 +1296,13 @@ describe('Raiden', () => {
     expect((await sub.getTokenBalance(token, sub.address)).eq(200)).toBe(true);
 
     // transfer on chain from subkey to main account
-    await expect(sub.transferOnchainTokens(token, sub.mainAddress!, 200)).resolves.toMatch(/^0x/);
+    await expect(sub.transferOnchainTokens(token, sub.mainAddress!)).resolves.toMatch(/^0x/);
+    // config.subkey is true, transfering ETH to mainAddress without specifying value should transfer everything
+    await expect(sub.transferOnchainBalance(sub.mainAddress!)).resolves.toMatch(/^0x/);
     expect((await sub.getTokenBalance(token)).isZero()).toBe(true);
     expect((await sub.getTokenBalance(token, sub.mainAddress)).eq(mainTokenBalance)).toBe(true);
+    // subkey is emptied of ETH
+    expect((await sub.getBalance()).isZero()).toBe(true);
 
     sub.stop();
   });

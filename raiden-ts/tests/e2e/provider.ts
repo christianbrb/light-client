@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/camelcase */
 import ganache, { GanacheServerOptions } from 'ganache-cli';
 import memdown from 'memdown';
 import { range } from 'lodash';
@@ -19,6 +18,7 @@ import { TokenNetworkRegistryFactory } from 'raiden-ts/contracts/TokenNetworkReg
 import { UserDeposit } from 'raiden-ts/contracts/UserDeposit';
 import { SecretRegistry } from 'raiden-ts/contracts/SecretRegistry';
 import Contracts from '../../raiden-contracts/raiden_contracts/data/contracts.json';
+import { MonitoringService } from 'raiden-ts/contracts/MonitoringService';
 
 export class TestProvider extends Web3Provider {
   public constructor(web3?: AsyncSendable, opts?: GanacheServerOptions) {
@@ -48,7 +48,7 @@ export class TestProvider extends Web3Provider {
   public async mine(count = 1): Promise<number> {
     const blockNumber = await this.getBlockNumber();
     log.debug(`mining ${count} blocks after blockNumber=${blockNumber}`);
-    const promise = new Promise<number>(resolve => {
+    const promise = new Promise<number>((resolve) => {
       const cb = (b: number): void => {
         if (b < blockNumber + count) return;
         this.removeListener('block', cb);
@@ -64,7 +64,7 @@ export class TestProvider extends Web3Provider {
     const blockNumber = await this.getBlockNumber();
     block = Math.max(block, blockNumber + 1);
     log.debug(`mining until block=${block} from ${blockNumber}`);
-    const promise = new Promise<number>(resolve => {
+    const promise = new Promise<number>((resolve) => {
       const cb = (b: number): void => {
         if (b < block) return;
         this.removeListener('block', cb);
@@ -140,12 +140,25 @@ export class TestProvider extends Web3Provider {
     await (await serviceRegistryContract.functions.setURL('https://pfs.raiden.test')).wait();
 
     const userDepositContract = (await new ContractFactory(
-      Contracts.contracts.UserDeposit.abi as ParamType[],
+      Contracts.contracts.UserDeposit.abi,
       Contracts.contracts.UserDeposit.bin,
       signer,
     ).deploy(tokenContract.address, 1e10)) as UserDeposit;
     await userDepositContract.deployed();
     const userDepositDeployBlock = userDepositContract.deployTransaction.blockNumber;
+
+    const monitoringServiceContract = (await new ContractFactory(
+      Contracts.contracts.MonitoringService.abi,
+      Contracts.contracts.MonitoringService.bin,
+      signer,
+    ).deploy(
+      tokenContract.address,
+      serviceRegistryContract.address,
+      userDepositContract.address,
+      registryContract.address,
+    )) as MonitoringService;
+    await monitoringServiceContract.deployed();
+    const monitoringServiceDeployBlock = monitoringServiceContract.deployTransaction.blockNumber;
 
     return {
       TokenNetworkRegistry: {
@@ -163,6 +176,10 @@ export class TestProvider extends Web3Provider {
       SecretRegistry: {
         address: secretRegistryContract.address as Address,
         block_number: secretRegistryDeployBlock!,
+      },
+      MonitoringService: {
+        address: monitoringServiceContract.address as Address,
+        block_number: monitoringServiceDeployBlock!,
       },
     };
   }
@@ -193,7 +210,7 @@ export class TestProvider extends Web3Provider {
 
     const decimals = await tokenContract.functions.decimals();
     const txs = await Promise.all(
-      accounts.map(account =>
+      accounts.map((account) =>
         tokenContract.functions.mintFor(parseUnits('1000', decimals), account),
       ),
     );
