@@ -13,7 +13,7 @@ describe('OfflineSnackbar.vue', () => {
     // Workaround to make window.navigator.onLine writable
     Object.defineProperty(window.navigator, 'onLine', {
       value: true,
-      writable: true
+      writable: true,
     });
   });
   test('do not show the snackbar when there is a working connection', async () => {
@@ -22,10 +22,9 @@ describe('OfflineSnackbar.vue', () => {
     const vuetify = new Vuetify();
     const wrapper = mount(OfflineSnackbar, {
       vuetify,
-      attachToDocument: true,
       mocks: {
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
     });
 
     expect(wrapper.find('.v-snack').exists()).toBe(false);
@@ -37,10 +36,9 @@ describe('OfflineSnackbar.vue', () => {
     const vuetify = new Vuetify();
     const wrapper = mount(OfflineSnackbar, {
       vuetify,
-      attachToDocument: true,
       mocks: {
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
     });
     await wrapper.vm.$nextTick();
 

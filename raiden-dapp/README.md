@@ -10,38 +10,47 @@ You can access an alpha testnet version of the Raiden dApp at https://lightclien
 
 ## Project setup
 ```
-npm install
+pnpm install
 ```
 
 ### Compiles and hot-reloads for development
 ```
-npm run serve
+pnpm run serve
 ```
 
 ### Compiles and minifies for production
 ```
-npm run build
+pnpm run build
 ```
 
 ### Run your tests
 ```
-npm run test
+pnpm run test
 ```
 
 ### Lints and fixes files
 ```
-npm run lint
-```
-
-### Run your end-to-end tests
-```
-npm run test:e2e
+pnpm run lint
 ```
 
 ### Run your unit tests
 ```
-npm run test:unit
+pnpm run test:unit
 ```
+
+### Run your end-to-end tests
+
+```
+pnpm run test:e2e
+```
+
+If you have not a full environment setup with Ethereum node, Matrix server etc.,
+then you can make use of the following script target:
+
+```
+pnpm run test:e2e:docker
+```
+
 
 ### Customize configuration
 See [Configuration Reference](https://cli.vuejs.org/config/).

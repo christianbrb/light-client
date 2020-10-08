@@ -1,10 +1,10 @@
 import * as t from 'io-ts';
-import { defer, EMPTY, from, merge, Observable, of, combineLatest } from 'rxjs';
+import { defer, EMPTY, from, merge, Observable, of, combineLatest, timer } from 'rxjs';
 import {
   catchError,
   concatMap,
-  debounceTime,
   delay,
+  debounceTime,
   distinctUntilChanged,
   filter,
   first,
@@ -18,39 +18,56 @@ import {
   timeout,
   withLatestFrom,
   exhaustMap,
-  skip,
   take,
+  mapTo,
+  debounce,
+  pairwise,
 } from 'rxjs/operators';
 import { fromFetch } from 'rxjs/fetch';
 import { Event } from 'ethers/contract';
 import { BigNumber, bigNumberify, toUtf8Bytes, verifyMessage, concat } from 'ethers/utils';
-import { Two, Zero, WeiPerEther } from 'ethers/constants';
-import memoize from 'lodash/memoize';
+import { Two, Zero, MaxUint256, WeiPerEther } from 'ethers/constants';
 
-import { UserDeposit } from '../contracts/UserDeposit';
 import { RaidenAction } from '../actions';
 import { RaidenState } from '../state';
-import { RaidenEpicDeps } from '../types';
+import { RaidenEpicDeps, Latest } from '../types';
+import { RaidenConfig } from '../config';
+import { Capabilities } from '../constants';
+import { getContractWithSigner, chooseOnchainAccount } from '../helpers';
+import { Presences } from '../transport/types';
 import { messageGlobalSend } from '../messages/actions';
 import { MessageType, PFSCapacityUpdate, PFSFeeUpdate, MonitorRequest } from '../messages/types';
 import { MessageTypeId, signMessage, createBalanceHash } from '../messages/utils';
 import { ChannelState, Channel } from '../channels/state';
-import { channelAmounts, groupChannel$ } from '../channels/utils';
-import { Address, decode, Int, Signature, Signed, UInt } from '../utils/types';
-import { isActionOf } from '../utils/actions';
-import { encode, losslessParse, losslessStringify } from '../utils/data';
-import { getEventsStream } from '../utils/ethers';
-import { RaidenError, ErrorCodes } from '../utils/error';
+import {
+  channelAmounts,
+  groupChannel$,
+  assertTx,
+  retryTx,
+  approveIfNeeded$,
+} from '../channels/utils';
+import { Address, decode, Int, Signature, Signed, UInt, isntNil, Hash } from '../utils/types';
+import { isActionOf, isResponseOf } from '../utils/actions';
+import { encode, jsonParse, jsonStringify } from '../utils/data';
+import { fromEthersEvent, logToContractEvent } from '../utils/ethers';
+import { RaidenError, ErrorCodes, assert } from '../utils/error';
 import { pluckDistinct } from '../utils/rx';
-import { Capabilities } from '../constants';
-import { iouClear, pathFind, iouPersist, pfsListUpdated, udcDeposited } from './actions';
+import { matrixPresence } from '../transport/actions';
+import { UserDeposit } from '../contracts/UserDeposit';
+import { HumanStandardToken } from '../contracts/HumanStandardToken';
+
+import {
+  iouClear,
+  pathFind,
+  iouPersist,
+  pfsListUpdated,
+  udcDeposit,
+  udcWithdraw,
+  udcWithdrawn,
+  msBalanceProofSent,
+} from './actions';
 import { channelCanRoute, pfsInfo, pfsListInfo, packIOU, signIOU } from './utils';
 import { IOU, LastIOUResults, PathResults, Paths, PFS } from './types';
-
-const oneToNAddress = memoize(
-  async (userDepositContract: UserDeposit) =>
-    userDepositContract.functions.one_to_n_address() as Promise<Address>,
-);
 
 /**
  * Codec for PFS API returned error
@@ -64,6 +81,14 @@ const PathError = t.readonly(
   }),
 );
 
+interface PathError extends t.TypeOf<typeof PathError> {}
+
+interface Route {
+  iou: Signed<IOU> | undefined;
+  paths?: Paths;
+  error?: PathError;
+}
+
 // returns a ISO string truncated at the integer second resolution
 function makeTimestamp(time?: Date): string {
   return (time ?? new Date()).toISOString().substr(0, 19);
@@ -72,7 +97,7 @@ function makeTimestamp(time?: Date): string {
 function fetchLastIou$(
   pfs: PFS,
   tokenNetwork: Address,
-  { address, signer, network, userDepositContract, latest$, config$ }: RaidenEpicDeps,
+  { address, signer, network, contractsInfo, latest$, config$ }: RaidenEpicDeps,
 ): Observable<IOU> {
   return defer(() => {
     const timestamp = makeTimestamp(),
@@ -91,17 +116,17 @@ function fetchLastIou$(
         },
       ).pipe(timeout(httpTimeout)),
     ),
-    withLatestFrom(latest$.pipe(pluck('state', 'blockNumber'))),
-    mergeMap(async ([response, blockNumber]) => {
+    withLatestFrom(latest$.pipe(pluck('state', 'blockNumber')), config$),
+    mergeMap(async ([response, blockNumber, { pfsIouTimeout }]) => {
       if (response.status === 404) {
         return {
           sender: address,
           receiver: pfs.address,
           chain_id: bigNumberify(network.chainId) as UInt<32>,
           amount: Zero as UInt<32>,
-          one_to_n_address: await oneToNAddress(userDepositContract),
-          expiration_block: bigNumberify(blockNumber).add(2 * 10 ** 5) as UInt<32>,
-        }; // return empty/zeroed IOU
+          one_to_n_address: contractsInfo.OneToN.address,
+          expiration_block: bigNumberify(blockNumber).add(pfsIouTimeout) as UInt<32>,
+        }; // return empty/zeroed IOU, but with valid new expiration_block
       }
       const text = await response.text();
       if (!response.ok)
@@ -110,7 +135,8 @@ function fetchLastIou$(
           responseText: text,
         });
 
-      const { last_iou: lastIou } = decode(LastIOUResults, losslessParse(text));
+      const { last_iou: lastIou } = decode(LastIOUResults, jsonParse(text));
+      // accept last IOU only if it was signed by us
       const signer = verifyMessage(packIOU(lastIou), lastIou.signature);
       if (signer !== address)
         throw new RaidenError(ErrorCodes.PFS_IOU_SIGNATURE_MISMATCH, {
@@ -133,7 +159,8 @@ function prepareNextIOU$(
       const cachedIOU = state.iou[tokenNetwork]?.[pfs.address];
       return cachedIOU ? of(cachedIOU) : fetchLastIou$(pfs, tokenNetwork, deps);
     }),
-    // increment lastIou by pfs.price
+    // increment lastIou by pfs.price; don't touch expiration_block, PFS doesn't like it getting
+    // updated and will give an error asking to update previous IOU instead of creating a new one
     map((iou) => ({ ...iou, amount: iou.amount.add(pfs.price) as UInt<32> })),
     mergeMap((iou) => signIOU(deps.signer, iou)),
   );
@@ -151,200 +178,37 @@ export const pathFindServiceEpic = (
   action$: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   deps: RaidenEpicDeps,
-): Observable<pathFind.success | pathFind.failure | iouPersist | iouClear> => {
-  const { log, latest$ } = deps;
+): Observable<
+  matrixPresence.request | pathFind.success | pathFind.failure | iouPersist | iouClear
+> => {
   return action$.pipe(
     filter(isActionOf(pathFind.request)),
     concatMap((action) =>
-      latest$.pipe(
+      deps.latest$.pipe(
         first(),
-        mergeMap(
-          ({ state, presences, config: { pfs: configPfs, httpTimeout, pfsSafetyMargin } }) => {
-            const { tokenNetwork, target } = action.meta;
-            if (!Object.values(state.tokens).includes(tokenNetwork))
-              throw new RaidenError(ErrorCodes.PFS_UNKNOWN_TOKEN_NETWORK, { tokenNetwork });
-            if (!(target in presences) || !presences[target].payload.available)
-              throw new RaidenError(ErrorCodes.PFS_TARGET_OFFLINE, { target });
-            if (presences[target].payload.caps?.[Capabilities.NO_RECEIVE])
-              throw new RaidenError(ErrorCodes.PFS_TARGET_NO_RECEIVE, { target });
+        mergeMap((latest) => {
+          const { target } = action.meta;
+          let presenceRequest: Observable<matrixPresence.request>;
+          let latestWithTargetInPresences: Observable<Latest>;
 
-            // if pathFind received a set of paths, pass it through to validation/cleanup
-            if (action.payload.paths) return of({ paths: action.payload.paths, iou: undefined });
-            // else, if possible, use a direct transfer
-            else if (
-              channelCanRoute(
-                state,
-                presences,
-                tokenNetwork,
-                target,
-                target,
-                action.meta.value,
-              ) === true
-            ) {
-              return of({
-                paths: [{ path: [deps.address, target], fee: Zero as Int<32> }],
-                iou: undefined,
-              });
-            } else if (
-              action.payload.pfs === null || // explicitly disabled in action
-              (!action.payload.pfs && configPfs === null) // undefined in action and disabled in config
-            ) {
-              // pfs not specified in action and disabled (null) in config
-              throw new RaidenError(ErrorCodes.PFS_DISABLED);
-            } else {
-              // else, request a route from PFS.
-              // pfs$ - Observable which emits one PFS info and then completes
-              const pfs$ = action.payload.pfs
-                ? // first, use action.payload.pfs as is, if present
-                  of(action.payload.pfs)
-                : configPfs
-                ? // or if config.pfs isn't disabled (null) nor auto (''), fetch & use it
-                  pfsInfo(configPfs, deps)
-                : // else (action unset, config.pfs=''=auto mode)
-                  latest$.pipe(
-                    pluck('pfsList'), // get cached pfsList
-                    // if needed, wait for list to be populated
-                    first((pfsList) => pfsList.length > 0),
-                    // fetch pfsInfo from whole list & sort it
-                    mergeMap((pfsList) => pfsListInfo(pfsList, deps)),
-                    tap((pfss) => log.info('Auto-selecting best PFS from:', pfss)),
-                    // pop best ranked
-                    pluck(0),
-                  );
-              return pfs$.pipe(
-                mergeMap((pfs) =>
-                  pfs.price.isZero()
-                    ? of({ pfs, iou: undefined })
-                    : prepareNextIOU$(pfs, tokenNetwork, deps).pipe(map((iou) => ({ pfs, iou }))),
-                ),
-                mergeMap(({ pfs, iou }) =>
-                  fromFetch(`${pfs.url}/api/v1/${tokenNetwork}/paths`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: losslessStringify({
-                      from: deps.address,
-                      to: target,
-                      value: UInt(32).encode(action.meta.value),
-                      max_paths: 10,
-                      iou: iou
-                        ? {
-                            ...iou,
-                            amount: UInt(32).encode(iou.amount),
-                            expiration_block: UInt(32).encode(iou.expiration_block),
-                            chain_id: UInt(32).encode(iou.chain_id),
-                          }
-                        : undefined,
-                    }),
-                  }).pipe(
-                    timeout(httpTimeout),
-                    map((response) => ({ response, iou })),
-                  ),
-                ),
-                mergeMap(async ({ response, iou }) => ({
-                  response,
-                  text: await response.text(),
-                  iou,
-                })),
-                map(({ response, text, iou }) => {
-                  // any decode error here will throw early and end up in catchError
-                  const data = losslessParse(text);
-                  if (!response.ok) {
-                    return { error: decode(PathError, data), iou };
-                  }
-                  return {
-                    paths: decode(PathResults, data).result.map(
-                      (r) =>
-                        ({
-                          path: r.path,
-                          // Add PFS safety margin to estimated fees
-                          fee: r.estimated_fee
-                            .mul(Math.round(pfsSafetyMargin * 1e6))
-                            .div(1e6) as Int<32>,
-                        } as const),
-                    ),
-                    iou,
-                  };
-                }),
-              );
-            }
-          },
-        ),
-        withLatestFrom(latest$),
-        // validate/cleanup received routes/paths/results
-        mergeMap(([data, { state, presences }]) =>
-          // looks like mergeMap with generator doesn't handle exceptions correctly
-          // use from+iterator from iife generator instead
-          from(
-            (function* () {
-              const { iou } = data;
-              if (iou) {
-                // if not error or error_code of "no route found", iou accepted => persist
-                if (data.paths || data.error.error_code === 2201)
-                  yield iouPersist(
-                    { iou },
-                    { tokenNetwork: action.meta.tokenNetwork, serviceAddress: iou.receiver },
-                  );
-                // else (error and error_code of "iou rejected"), clear
-                else
-                  yield iouClear(undefined, {
-                    tokenNetwork: action.meta.tokenNetwork,
-                    serviceAddress: iou.receiver,
-                  });
-              }
-              // if error, don't proceed
-              if (!data.paths) {
-                const { errors, error_code } = data.error;
-                if (error_code === 2201) {
-                  throw new RaidenError(ErrorCodes.PFS_NO_ROUTES_BETWEEN_NODES);
-                }
+          if (target in latest.presences) {
+            presenceRequest = EMPTY;
+            latestWithTargetInPresences = of(latest);
+          } else {
+            presenceRequest = of(matrixPresence.request(undefined, { address: target }));
+            latestWithTargetInPresences = waitForMatrixPresenceResponse$(action$, deps, target);
+          }
 
-                throw new RaidenError(ErrorCodes.PFS_ERROR_RESPONSE, {
-                  errorCode: error_code,
-                  errors,
-                });
-              }
-              const filteredPaths: Paths = [],
-                invalidatedRecipients = new Set<Address>();
-              // eslint-disable-next-line prefer-const
-              for (let { path, fee } of data.paths) {
-                // if route has us as first hop, cleanup/shift
-                if (path[0] === deps.address) path = path.slice(1);
-                const recipient = path[0];
-                // if this recipient was already invalidated in a previous iteration, skip
-                if (invalidatedRecipients.has(recipient)) continue;
-                // if we already found some valid route, allow only new routes through this peer
-                const canTransferOrReason = !filteredPaths.length
-                  ? channelCanRoute(
-                      state,
-                      presences,
-                      action.meta.tokenNetwork,
-                      recipient,
-                      action.meta.target,
-                      action.meta.value.add(fee) as UInt<32>,
-                    )
-                  : recipient !== filteredPaths[0].path[0]
-                  ? 'path: already selected another recipient'
-                  : fee.gt(filteredPaths[0].fee)
-                  ? 'path: already selected a smaller fee'
-                  : true;
-                if (canTransferOrReason !== true) {
-                  log.warn(
-                    'Invalidated received route. Reason:',
-                    canTransferOrReason,
-                    'Route:',
-                    path,
-                  );
-                  invalidatedRecipients.add(recipient);
-                  continue;
-                }
-                filteredPaths.push({ path, fee });
-              }
-              if (!filteredPaths.length) throw new RaidenError(ErrorCodes.PFS_NO_ROUTES_FOUND);
-              yield pathFind.success({ paths: filteredPaths }, action.meta);
-            })(),
-          ),
-        ),
-        catchError((err) => of(pathFind.failure(err, action.meta))),
+          return merge(
+            latestWithTargetInPresences.pipe(
+              mergeMap((latest) => getRoute$(action, deps, latest)),
+              withLatestFrom(deps.latest$),
+              mergeMap(([route, latest]) => validateRoute$(action, deps, route, latest)),
+              catchError((err) => of(pathFind.failure(err, action.meta))),
+            ),
+            presenceRequest,
+          );
+        }),
       ),
     ),
   );
@@ -360,28 +224,33 @@ export const pathFindServiceEpic = (
  * @param deps.address - Our address
  * @param deps.network - Current Network
  * @param deps.signer - Signer instance
- * @param deps.latest$ - Latest observable
  * @param deps.config$ - Config observable
  * @returns Observable of messageGlobalSend actions
  */
 export const pfsCapacityUpdateEpic = (
   {}: Observable<RaidenAction>,
-  {}: Observable<RaidenState>,
-  { log, address, network, signer, latest$, config$ }: RaidenEpicDeps,
+  state$: Observable<RaidenState>,
+  { log, address, network, signer, config$ }: RaidenEpicDeps,
 ): Observable<messageGlobalSend> =>
-  latest$.pipe(
-    pluck('state'),
+  state$.pipe(
     groupChannel$,
-    withLatestFrom(config$),
-    mergeMap(([grouped$, { httpTimeout }]) =>
+    mergeMap((grouped$) =>
       grouped$.pipe(
+        pairwise(), // skips first emission on startup
         withLatestFrom(config$),
-        filter(([, { pfsRoom }]) => !!pfsRoom), // ignore actions while/if config.pfsRoom isn't set
-        debounceTime(httpTimeout / 2), // default: 15s
-        concatMap(([channel, { revealTimeout, pfsRoom }]) => {
+        // ignore actions if channel not open or while/if config.pfsRoom isn't set
+        filter(([[, channel], { pfsRoom }]) => channel.state === ChannelState.open && !!pfsRoom),
+        debounce(
+          ([[prev, cur], { httpTimeout }]) =>
+            cur.own.locks.length > prev.own.locks.length ||
+            cur.partner.locks.length > prev.partner.locks.length
+              ? // if either lock increases, a transfer is pending, debounce by httpTimeout=30s
+                timer(httpTimeout)
+              : of(1), // otherwise, deposited or a transfer completed, fires immediatelly
+        ),
+        switchMap(([[, channel], { revealTimeout, pfsRoom }]) => {
           const tokenNetwork = channel.tokenNetwork;
           const partner = channel.partner.address;
-          if (channel.state !== ChannelState.open) return EMPTY;
           const { ownCapacity, partnerCapacity } = channelAmounts(channel);
 
           const message: PFSCapacityUpdate = {
@@ -417,7 +286,7 @@ export const pfsCapacityUpdateEpic = (
  * PFSFeeUpdate to path_finding global room, so PFSs can pick us for mediation
  * TODO: Currently, we always send Zero fees; we should send correct fee data from config
  *
- * @param action$ - Observable of channelMonitor actions
+ * @param action$ - Observable of channelMonitored actions
  * @param state$ - Observable of RaidenStates
  * @param deps - Raiden epic dependencies
  * @param deps.log - Logger instance
@@ -438,10 +307,11 @@ export const pfsFeeUpdateEpic = (
     mergeMap((grouped$) => grouped$.pipe(first())),
     withLatestFrom(config$),
     // ignore actions while/if mediating not enabled
-    filter(([, { pfsRoom, caps }]) => !!pfsRoom && !caps?.[Capabilities.NO_MEDIATE]),
+    filter(
+      ([channel, { pfsRoom, caps }]) =>
+        channel.state === ChannelState.open && !!pfsRoom && !caps?.[Capabilities.NO_MEDIATE],
+    ),
     mergeMap(([channel, { pfsRoom }]) => {
-      if (channel.state !== ChannelState.open) return EMPTY;
-
       const message: PFSFeeUpdate = {
         type: MessageType.PFS_FEE_UPDATE,
         canonical_identifier: {
@@ -479,59 +349,80 @@ export const pfsFeeUpdateEpic = (
  * @param action$ - Observable of RaidenActions
  * @param state$ - Observable of RaidenStates
  * @param deps - RaidenEpicDeps object
+ * @param deps.provider - Provider instance
  * @param deps.serviceRegistryContract - ServiceRegistry contract instance
  * @param deps.contractsInfo - Contracts info mapping
  * @param deps.config$ - Config observable
+ * @param deps.latest$ - Latest observable
  * @returns Observable of pfsListUpdated actions
  */
 export const pfsServiceRegistryMonitorEpic = (
   {}: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
-  { serviceRegistryContract, contractsInfo, config$ }: RaidenEpicDeps,
+  { provider, serviceRegistryContract, contractsInfo, config$, latest$ }: RaidenEpicDeps,
 ): Observable<pfsListUpdated> =>
-  config$.pipe(
+  combineLatest([
     // monitors config.pfs, and only monitors contract if it's empty
-    pluckDistinct('pfs'),
-    switchMap((pfs) =>
-      pfs !== ''
+    config$.pipe(pluckDistinct('pfs')),
+    config$.pipe(pluckDistinct('confirmationBlocks')),
+  ]).pipe(
+    switchMap(([pfs, confirmationBlocks]) =>
+      pfs !== '' && pfs !== undefined
         ? // disable ServiceRegistry monitoring if/while pfs is null=disabled or truty
           EMPTY
-        : // type of elements emitted by getEventsStream (past and new events coming from contract):
-          // [service, valid_till, deposit_amount, deposit_contract, Event]
-          getEventsStream<[Address, BigNumber, UInt<32>, Address, Event]>(
-            serviceRegistryContract,
-            [serviceRegistryContract.filters.RegisteredService(null, null, null, null)],
-            of(contractsInfo.ServiceRegistry.block_number), // at boot, always fetch from deploy block
-          ).pipe(
-            groupBy(([service]) => service),
-            mergeMap((grouped$) =>
-              grouped$.pipe(
-                // switchMap ensures new events for each server (grouped$) picks latest event
-                switchMap(([service, valid_till]) => {
-                  const now = Date.now(),
-                    validTill = valid_till.mul(1000); // milliseconds valid_till
-                  if (validTill.lt(now)) return EMPTY; // this event already expired
-                  // end$ will emit valid=false iff <2^31 ms in the future (setTimeout limit)
-                  const end$ = validTill.sub(now).lt(Two.pow(31))
-                    ? of({ service, valid: false }).pipe(delay(new Date(validTill.toNumber())))
-                    : EMPTY;
-                  return merge(of({ service, valid: true }), end$);
-                }),
+        : fromEthersEvent(
+            provider,
+            serviceRegistryContract.filters.RegisteredService(null, null, null, null),
+            undefined,
+            confirmationBlocks,
+            contractsInfo.ServiceRegistry.block_number,
+          )
+            .pipe(
+              withLatestFrom(latest$),
+              // filter only confirmed logs
+              filter(
+                ([{ blockNumber }, { state }]) =>
+                  !!blockNumber && blockNumber + confirmationBlocks <= state.blockNumber,
               ),
+              pluck(0),
+              map(
+                // [service, valid_till, deposit_amount, deposit_contract, Event]
+                logToContractEvent<[Address, BigNumber, UInt<32>, Address, Event]>(
+                  serviceRegistryContract,
+                ),
+              ),
+              filter(isntNil),
+            )
+            .pipe(
+              groupBy(([service]) => service),
+              mergeMap((grouped$) =>
+                grouped$.pipe(
+                  // switchMap ensures new events for each server (grouped$) picks latest event
+                  switchMap(([service, valid_till]) => {
+                    const now = Date.now(),
+                      validTill = valid_till.mul(1000); // milliseconds valid_till
+                    if (validTill.lt(now)) return EMPTY; // this event already expired
+                    // end$ will emit valid=false iff <2^31 ms in the future (setTimeout limit)
+                    const end$ = validTill.sub(now).lt(Two.pow(31))
+                      ? of({ service, valid: false }).pipe(delay(new Date(validTill.toNumber())))
+                      : EMPTY;
+                    return merge(of({ service, valid: true }), end$);
+                  }),
+                ),
+              ),
+              scan(
+                (acc, { service, valid }) =>
+                  !valid && acc.includes(service)
+                    ? acc.filter((s) => s !== service)
+                    : valid && !acc.includes(service)
+                    ? [...acc, service]
+                    : acc,
+                [] as readonly Address[],
+              ),
+              distinctUntilChanged(),
+              debounceTime(1e3), // debounce burst of updates on initial fetch
+              map((pfsList) => pfsListUpdated({ pfsList })),
             ),
-            scan(
-              (acc, { service, valid }) =>
-                !valid && acc.includes(service)
-                  ? acc.filter((s) => s !== service)
-                  : valid && !acc.includes(service)
-                  ? [...acc, service]
-                  : acc,
-              [] as readonly Address[],
-            ),
-            distinctUntilChanged(),
-            debounceTime(1e3), // debounce burst of updates on initial fetch
-            map((pfsList) => pfsListUpdated({ pfsList })),
-          ),
     ),
   );
 
@@ -550,15 +441,110 @@ export const monitorUdcBalanceEpic = (
   {}: Observable<RaidenAction>,
   {}: Observable<RaidenState>,
   { address, latest$, userDepositContract }: RaidenEpicDeps,
-): Observable<udcDeposited> =>
+): Observable<udcDeposit.success> =>
   latest$.pipe(
     pluckDistinct('state', 'blockNumber'),
     // it's seems ugly to call on each block, but UserDepositContract doesn't expose deposits as
     // events, and ethers actually do that to monitor token balances, so it's equivalent
     exhaustMap(() => userDepositContract.functions.effectiveBalance(address) as Promise<UInt<32>>),
-    distinctUntilChanged((x, y) => y.eq(x)),
-    map(udcDeposited),
+    withLatestFrom(latest$),
+    filter(([balance, { udcBalance }]) => !udcBalance.eq(balance)),
+    map(([balance]) => udcDeposit.success(undefined, { totalDeposit: balance })),
   );
+
+function makeUdcDeposit$(
+  [tokenContract, userDepositContract]: [HumanStandardToken, UserDeposit],
+  [sender, address]: [Address, Address],
+  [deposit, totalDeposit]: [UInt<32>, UInt<32>],
+  { pollingInterval, minimumAllowance }: RaidenConfig,
+  { log }: Pick<RaidenEpicDeps, 'log'>,
+) {
+  return defer(() =>
+    Promise.all([
+      tokenContract.functions.balanceOf(sender) as Promise<UInt<32>>,
+      tokenContract.functions.allowance(sender, userDepositContract.address) as Promise<UInt<32>>,
+      userDepositContract.functions.effectiveBalance(address),
+    ]),
+  ).pipe(
+    mergeMap(([balance, allowance, deposited]) => {
+      assert(deposited.add(deposit).eq(totalDeposit), [
+        ErrorCodes.UDC_DEPOSIT_OUTDATED,
+        { requested: totalDeposit.toString(), current: deposited.toString() },
+      ]);
+      return approveIfNeeded$(
+        [balance, allowance, deposit],
+        tokenContract,
+        userDepositContract.address as Address,
+        ErrorCodes.RDN_APPROVE_TRANSACTION_FAILED,
+        { log, minimumAllowance },
+      );
+    }),
+    // send setTotalDeposit transaction
+    mergeMap(() => userDepositContract.functions.deposit(address, totalDeposit)),
+    assertTx('deposit', ErrorCodes.RDN_DEPOSIT_TRANSACTION_FAILED, { log }),
+    // retry also txFail errors, since estimateGas can lag behind just-opened channel or
+    // just-approved allowance
+    retryTx(pollingInterval, undefined, undefined, { log }),
+  );
+}
+
+/**
+ * Handles a udcDeposit.request and deposit SVT/RDN to UDC
+ *
+ * @param action$ - Observable of udcDeposit.request actions
+ * @param state$ - Observable of RaidenStates
+ * @param deps - Epics dependencies
+ * @param deps.userDepositContract - UserDeposit contract instance
+ * @param deps.getTokenContract - Factory for Token contracts
+ * @param deps.address - Our address
+ * @param deps.log - Logger instance
+ * @param deps.signer - Signer
+ * @param deps.main - Main Signer/Address
+ * @param deps.config$ - Config observable
+ * @returns - Observable of udcDeposit.failure|udcDeposit.success actions
+ */
+export const udcDepositEpic = (
+  action$: Observable<RaidenAction>,
+  {}: Observable<RaidenState>,
+  { userDepositContract, getTokenContract, address, log, signer, main, config$ }: RaidenEpicDeps,
+): Observable<udcDeposit.failure | udcDeposit.success> => {
+  const serviceToken = userDepositContract.functions.token() as Promise<Address>;
+  return action$.pipe(
+    filter(udcDeposit.request.is),
+    concatMap((action) =>
+      defer(() => serviceToken).pipe(
+        withLatestFrom(config$),
+        mergeMap(([token, config]) => {
+          const { signer: onchainSigner, address: onchainAddress } = chooseOnchainAccount(
+            { signer, address, main },
+            action.payload.subkey ?? config.subkey,
+          );
+          const tokenContract = getContractWithSigner(getTokenContract(token), onchainSigner);
+          const udcContract = getContractWithSigner(userDepositContract, onchainSigner);
+
+          return makeUdcDeposit$(
+            [tokenContract, udcContract],
+            [onchainAddress, address],
+            [action.payload.deposit, action.meta.totalDeposit],
+            config,
+            { log },
+          );
+        }),
+        map(([, receipt]) =>
+          udcDeposit.success(
+            {
+              txHash: receipt.transactionHash,
+              txBlock: receipt.blockNumber,
+              confirmed: undefined, // let confirmationEpic confirm this action
+            },
+            action.meta,
+          ),
+        ),
+        catchError((error) => of(udcDeposit.failure(error, action.meta))),
+      ),
+    ),
+  );
+};
 
 /**
  * Makes a *Map callback which returns an observable of actions to send RequestMonitoring messages
@@ -571,8 +557,8 @@ export const monitorUdcBalanceEpic = (
  * @param deps.contractsInfo - Contracts info mapping
  * @param deps.latest$ - Latest observable
  * @param deps.config$ - Config observable
- * @returns An operator which receives a ChangedChannel and RaidenConfig and returns a cold
- * Observable of messageGlobalSend actions to the global monitoring room
+ * @returns An operator which receives prev and current Channel states and returns a cold
+ *      Observable of messageGlobalSend actions to the global monitoring room
  */
 function makeMonitoringRequest$({
   address,
@@ -583,9 +569,10 @@ function makeMonitoringRequest$({
   latest$,
   config$,
 }: RaidenEpicDeps) {
-  return (channel: Channel) => {
+  return ([, channel]: [Channel, Channel]) => {
     const { partnerUnlocked } = channelAmounts(channel);
-    if (!partnerUnlocked.gt(Zero)) return EMPTY; // give up early if nothing to lose
+    // give up early if nothing to lose
+    if (partnerUnlocked.isZero()) return EMPTY;
 
     return combineLatest([latest$, config$]).pipe(
       // combineLatest + filter ensures it'll pass if anything here changes
@@ -599,19 +586,15 @@ function makeMonitoringRequest$({
           // use partner's total off & on-chain unlocked, total we'd lose if don't update BP
           partnerUnlocked
             // use rateToSvt to convert to equivalent SVT, and pass only if > monitoringReward;
-            // default rate=0 means it'll NEVER monitor if no rate is set for token
-            .mul(rateToSvt[channel.token] ?? Zero)
+            // default rate=MaxUint256 means it'll ALWAYS monitor if no rate is set for token
+            .mul(rateToSvt[channel.token] ?? MaxUint256)
             .div(WeiPerEther)
             .gt(monitoringReward),
       ),
       take(1), // take/act on first time all conditions above pass
       mergeMap(([, { monitoringReward, monitoringRoom }]) => {
         const balanceProof = channel.partner.balanceProof;
-        const balanceHash = createBalanceHash(
-          balanceProof.transferredAmount,
-          balanceProof.lockedAmount,
-          balanceProof.locksroot,
-        );
+        const balanceHash = createBalanceHash(balanceProof);
 
         const nonClosingMessage = concat([
           encode(channel.tokenNetwork, 20),
@@ -680,18 +663,572 @@ export const monitorRequestEpic = (
       grouped$.pipe(
         // act only if partner's transferredAmount or lockedAmount changes
         distinctUntilChanged(
-          (x, y) =>
-            y.partner.balanceProof.transferredAmount.eq(
-              x.partner.balanceProof.transferredAmount,
+          (a, b) =>
+            b.partner.balanceProof.transferredAmount.eq(
+              a.partner.balanceProof.transferredAmount,
             ) &&
-            y.partner.balanceProof.lockedAmount.eq(x.partner.balanceProof.lockedAmount) &&
-            y.partner.locks === x.partner.locks,
+            b.partner.balanceProof.lockedAmount.eq(a.partner.balanceProof.lockedAmount) &&
+            b.partner.locks === a.partner.locks,
         ),
-        skip(1), // distinctUntilChanged allows first, we want to skip and act only on changes
-        debounceTime(httpTimeout / 2), // default: 15s
+        pairwise(), // distinctUntilChanged allows first, so pair and skips it
+        debounce(([prev, cur]) =>
+          // if partner lock increases, a transfer is pending, debounce by httpTimeout=30s
+          // otherwise transfer completed, emits immediately
+          cur.partner.locks.length > prev.partner.locks.length ? timer(httpTimeout) : of(1),
+        ),
         // switchMap may unsubscribe from previous udcBalance wait/signature prompts if partner's
         // balanceProof balance changes in the meantime
         switchMap(makeMonitoringRequest$(deps)),
       ),
     ),
   );
+
+/**
+ * Handle a UDC withdraw request and send plan transaction
+ *
+ * @param action$ - Observable of udcWithdraw.request actions
+ * @param state$ - Observable of RaidenStates
+ * @param deps - Epics dependencies
+ * @param deps.userDepositContract - UDC contract instance
+ * @param deps.address - Our address
+ * @param deps.log - Logger instance
+ * @param deps.signer - Signer instance
+ * @param deps.provider - Provider instance
+ * @returns Observable of udcWithdraw.success|udcWithdraw.failure actions
+ */
+export const udcWithdrawRequestEpic = (
+  action$: Observable<RaidenAction>,
+  state$: Observable<RaidenState>,
+  { userDepositContract, address, log, signer, provider }: RaidenEpicDeps,
+): Observable<udcWithdraw.success | udcWithdraw.failure> =>
+  action$.pipe(
+    filter(udcWithdraw.request.is),
+    mergeMap((action) =>
+      userDepositContract.functions
+        .balances(address)
+        .then((balance) => [action, balance] as const),
+    ),
+    concatMap(([action, balance]) => {
+      const contract = getContractWithSigner(userDepositContract, signer);
+      const amount = action.meta.amount;
+      return defer(() => {
+        assert(amount.gt(Zero), [
+          ErrorCodes.UDC_PLAN_WITHDRAW_GT_ZERO,
+          {
+            amount: amount.toString(),
+          },
+        ]);
+
+        assert(balance.sub(amount).gte(Zero), [
+          ErrorCodes.UDC_PLAN_WITHDRAW_EXCEEDS_AVAILABLE,
+          {
+            balance: balance.toString(),
+            amount: amount.toString(),
+          },
+        ]);
+
+        return contract.functions.planWithdraw(amount);
+      }).pipe(
+        assertTx('planWithdraw', ErrorCodes.UDC_PLAN_WITHDRAW_FAILED, { log }),
+        retryTx(provider.pollingInterval, undefined, undefined, { log }),
+        mergeMap(([, { transactionHash: txHash, blockNumber: txBlock }]) =>
+          state$.pipe(
+            pluckDistinct('blockNumber'),
+            exhaustMap(() => userDepositContract.functions.withdraw_plans(address)),
+            first(({ amount }) => amount.gte(action.meta.amount)),
+            map(({ amount, withdraw_block }) =>
+              udcWithdraw.success(
+                {
+                  block: withdraw_block.toNumber(),
+                  txHash,
+                  txBlock,
+                  confirmed: undefined,
+                },
+                { amount: amount as UInt<32> },
+              ),
+            ),
+          ),
+        ),
+        catchError((err) => {
+          log.error('Planning udc withdraw failed', err);
+          return of(udcWithdraw.failure(err, action.meta));
+        }),
+      );
+    }),
+  );
+
+/**
+ * At startup, check if there was a previous plan and re-emit udcWithdraw.success action
+ *
+ * @param action$ - Observable of RaidenActions
+ * @param state$ - Observable of RaidenStates
+ * @param deps - Epics dependencies
+ * @param deps.userDepositContract - UDC contract instance
+ * @param deps.address - Our address
+ * @returns Observable of udcWithdraw.success actions
+ */
+export const udcCheckWithdrawPlannedEpic = (
+  {}: Observable<RaidenAction>,
+  {}: Observable<RaidenState>,
+  { userDepositContract, address }: RaidenEpicDeps,
+): Observable<udcWithdraw.success> => {
+  return defer(() => userDepositContract.functions.withdraw_plans(address)).pipe(
+    filter((value) => value.withdraw_block.gt(Zero)),
+    map(({ amount, withdraw_block }) =>
+      udcWithdraw.success(
+        { block: withdraw_block.toNumber(), confirmed: true },
+        { amount: amount as UInt<32> },
+      ),
+    ),
+  );
+};
+
+/**
+ * When a plan is detected (done on this session or previous), wait until timeout and withdraw
+ *
+ * @param action$ - Observable of udcWithdraw.success actions
+ * @param state$ - Observable of RaidenStates
+ * @param deps - Epics dependencies
+ * @param deps.log - Logger instance
+ * @param deps.userDepositContract - UDC contract instance
+ * @param deps.address - Our address
+ * @param deps.signer - Signer instance
+ * @param deps.provider - Provider instance
+ * @returns Observable of udcWithdrawn|udcWithdraw.failure actions
+ */
+export const udcWithdrawPlannedEpic = (
+  action$: Observable<RaidenAction>,
+  state$: Observable<RaidenState>,
+  { log, userDepositContract, address, signer, provider }: RaidenEpicDeps,
+): Observable<udcWithdrawn | udcWithdraw.failure> => {
+  return action$.pipe(
+    filter(udcWithdraw.success.is),
+    filter((action) => action.payload.confirmed === true),
+    mergeMap((action) =>
+      state$.pipe(
+        pluck('blockNumber'),
+        first((blockNumber) => action.payload.block < blockNumber),
+        mapTo(action),
+      ),
+    ),
+    mergeMap((action) =>
+      userDepositContract.functions
+        .balances(address)
+        .then((balance) => [action, balance] as const),
+    ),
+    concatMap(([action, balance]) => {
+      const contract = getContractWithSigner(userDepositContract, signer);
+      return defer(() => {
+        assert(balance.gt(Zero), [
+          ErrorCodes.UDC_WITHDRAW_NO_BALANCE,
+          {
+            balance: balance.toString(),
+          },
+        ]);
+        return contract.functions.withdraw(action.meta.amount);
+      }).pipe(
+        assertTx('withdraw', ErrorCodes.UDC_WITHDRAW_FAILED, { log }),
+        retryTx(provider.pollingInterval, undefined, undefined, { log }),
+        concatMap(([, { transactionHash, blockNumber }]) =>
+          state$.pipe(
+            pluckDistinct('blockNumber'),
+            exhaustMap(() => contract.functions.balances(address)),
+            first((newBalance) => newBalance.lt(balance)),
+            map((newBalance) =>
+              udcWithdrawn(
+                {
+                  withdrawal: balance.sub(newBalance) as UInt<32>,
+                  txHash: transactionHash,
+                  txBlock: blockNumber,
+                  confirmed: undefined, // let confirmationEpic confirm this, values only FYI
+                },
+                action.meta,
+              ),
+            ),
+          ),
+        ),
+        catchError((err) => {
+          log.error('Error when processing the withdraw plan', err);
+          return of(udcWithdraw.failure(err, action.meta));
+        }),
+      );
+    }),
+  );
+};
+
+/**
+ * Monitors MonitoringService contract and fires events when an MS sent a BP in our behalf.
+ *
+ * When this epic is subscribed (startup), it fetches events since 'provider.resetEventsBlock',
+ * which is set to latest monitored block, so on startup we always pick up events that were fired
+ * while offline, and keep monitoring while online, although it isn't probable that MS would quick
+ * in while we're online, since [[channelUpdateEpic]] would update the channel ourselves.
+ *
+ * @param action$ - Observable of RaidenActions
+ * @param state$ - Observable of RaidenStates
+ * @param deps - Epics dependencies
+ * @param deps.provider - Provider instance
+ * @param deps.monitoringServiceContract - MonitoringService contract instance
+ * @param deps.address - Our address
+ * @param deps.config$ - Config observable
+ * @returns Observable of msBalanceProofSent actions
+ */
+export const msMonitorNewBPEpic = (
+  {}: Observable<RaidenAction>,
+  state$: Observable<RaidenState>,
+  { provider, monitoringServiceContract, address, config$ }: RaidenEpicDeps,
+): Observable<msBalanceProofSent> => // NewBalanceProofReceived event: [tokenNetwork, channelId, reward, nonce, monitoringService, ourAddress]
+  config$.pipe(
+    pluckDistinct('confirmationBlocks'),
+    switchMap((confirmationBlocks) =>
+      fromEthersEvent(
+        provider,
+        monitoringServiceContract.filters.NewBalanceProofReceived(
+          null,
+          null,
+          null,
+          null,
+          null,
+          address,
+        ),
+        undefined,
+        confirmationBlocks,
+      ),
+    ),
+    map(
+      logToContractEvent<[Address, UInt<32>, UInt<32>, UInt<8>, Address, Address, Event]>(
+        monitoringServiceContract,
+      ),
+    ),
+    filter(isntNil),
+    // should never fail, as per filter
+    filter(([, , , , , raidenAddress]) => raidenAddress === address),
+    withLatestFrom(state$, config$),
+    map(
+      ([
+        [tokenNetwork, id, reward, nonce, monitoringService, , event],
+        state,
+        { confirmationBlocks },
+      ]) => {
+        const channel = Object.values(state.channels)
+          .concat(Object.values(state.oldChannels))
+          .find((c) => c.tokenNetwork === tokenNetwork && id.eq(c.id));
+        const txBlock = event.blockNumber;
+        if (!channel || !txBlock) return;
+        return msBalanceProofSent({
+          tokenNetwork,
+          partner: channel.partner.address,
+          id: channel.id,
+          reward,
+          nonce,
+          monitoringService,
+          txHash: event.transactionHash as Hash,
+          txBlock,
+          confirmed: txBlock + confirmationBlocks <= state.blockNumber ? true : undefined,
+        });
+      },
+    ),
+    filter(isntNil),
+  );
+
+function waitForMatrixPresenceResponse$(
+  action$: Observable<RaidenAction>,
+  deps: RaidenEpicDeps,
+  target: Address,
+): Observable<Latest> {
+  return action$.pipe(
+    filter(
+      isResponseOf<typeof matrixPresence>(matrixPresence, { address: target }),
+    ),
+    take(1),
+    mergeMap((matrixPresenceResponse) => {
+      if (matrixPresence.success.is(matrixPresenceResponse)) {
+        return deps.latest$.pipe(first(({ presences }) => target in presences));
+      } else {
+        throw matrixPresenceResponse.payload;
+      }
+    }),
+  );
+}
+
+function getRoute$(
+  action: pathFind.request,
+  deps: RaidenEpicDeps,
+  { state, presences, config }: Latest,
+): Observable<{ paths?: Paths; iou: Signed<IOU> | undefined; error?: PathError }> {
+  validateRouteTargetAndEventuallyThrow(action, state, presences);
+
+  const { tokenNetwork, target, value } = action.meta;
+
+  if (action.payload.paths) {
+    return of({ paths: action.payload.paths, iou: undefined });
+  } else if (channelCanRoute(state, presences, tokenNetwork, target, target, value) === true) {
+    return of({
+      paths: [{ path: [deps.address, action.meta.target], fee: Zero as Int<32> }],
+      iou: undefined,
+    });
+  } else if (pfsIsDisabled(action, config)) {
+    throw new RaidenError(ErrorCodes.PFS_DISABLED);
+  } else {
+    return getRouteFromPfs$(action, deps);
+  }
+}
+
+function validateRoute$(
+  action: pathFind.request,
+  deps: RaidenEpicDeps,
+  route: Route,
+  latest: Latest,
+): Observable<pathFind.success | pathFind.failure | iouPersist | iouClear> {
+  const { tokenNetwork } = action.meta;
+  const { iou, paths, error } = route;
+
+  return from(
+    // looks like mergeMap with generator doesn't handle exceptions correctly
+    // use from+iterator from iife generator instead
+    (function* () {
+      if (iou) {
+        if (shouldPersistIou(route)) {
+          yield iouPersist({ iou }, { tokenNetwork: tokenNetwork, serviceAddress: iou.receiver });
+        } else {
+          yield iouClear(undefined, {
+            tokenNetwork: tokenNetwork,
+            serviceAddress: iou.receiver,
+          });
+        }
+      }
+
+      if (error) {
+        if (isNoRouteFoundError(error)) {
+          throw new RaidenError(ErrorCodes.PFS_NO_ROUTES_BETWEEN_NODES);
+        } else {
+          throw new RaidenError(ErrorCodes.PFS_ERROR_RESPONSE, {
+            errorCode: error.error_code,
+            errors: error.errors,
+          });
+        }
+      }
+
+      const filteredPaths = filterPaths(action, deps, latest, paths);
+
+      if (filteredPaths.length) {
+        yield pathFind.success({ paths: filteredPaths }, action.meta);
+      } else {
+        throw new RaidenError(ErrorCodes.PFS_NO_ROUTES_FOUND);
+      }
+    })(),
+  );
+}
+
+function validateRouteTargetAndEventuallyThrow(
+  action: pathFind.request,
+  state: RaidenState,
+  presences: Presences,
+): void {
+  const { tokenNetwork, target, value } = action.meta;
+
+  assert(Object.values(state.tokens).includes(tokenNetwork), [
+    ErrorCodes.PFS_UNKNOWN_TOKEN_NETWORK,
+    { tokenNetwork },
+  ]);
+
+  assert(presences[target].payload.available, [ErrorCodes.PFS_TARGET_OFFLINE, { target }]);
+
+  assert(!presences[target].payload.caps?.[Capabilities.NO_RECEIVE], [
+    ErrorCodes.PFS_TARGET_NO_RECEIVE,
+    { target },
+  ]);
+
+  assert(
+    Object.values(state.channels).some(
+      (channel) =>
+        channelCanRoute(state, presences, tokenNetwork, channel.partner.address, target, value) ===
+        true,
+    ),
+    ErrorCodes.PFS_NO_ROUTES_BETWEEN_NODES,
+  );
+}
+
+function pfsIsDisabled(action: pathFind.request, { pfs }: RaidenConfig): boolean {
+  const disabledByAction = action.payload.pfs === null;
+  const disabledByConfig = !action.payload.pfs && pfs === null;
+  return disabledByAction || disabledByConfig;
+}
+
+function getRouteFromPfs$(action: pathFind.request, deps: RaidenEpicDeps): Observable<Route> {
+  const { tokenNetwork, target, value } = action.meta;
+
+  return deps.config$.pipe(
+    first(),
+    mergeMap((config) =>
+      getPsfInfo$(action.payload.pfs, config.pfs, deps).pipe(
+        mergeMap((pfs) => getIouForPfs(pfs, tokenNetwork, deps)),
+        mergeMap(({ pfs, iou }) =>
+          requestPfs$(pfs, iou, tokenNetwork, deps.address, target, value, config),
+        ),
+        map(({ pfsResponse, responseText, iou }) =>
+          parsePfsResponse(pfsResponse, responseText, iou, config),
+        ),
+      ),
+    ),
+  );
+}
+
+function filterPaths(
+  action: pathFind.request,
+  { address, log }: RaidenEpicDeps,
+  { state, presences }: Latest,
+  paths: Paths | undefined,
+): Paths {
+  const filteredPaths: Paths = [];
+  const invalidatedRecipients = new Set<Address>();
+
+  if (paths) {
+    for (const { path, fee } of paths) {
+      const cleanPath = getCleanPath(path, address);
+      const recipient = cleanPath[0];
+      let shouldSelectPath = false;
+      let reasonToNotSelect = '';
+
+      if (invalidatedRecipients.has(recipient)) continue;
+      if (filteredPaths.length === 0) {
+        const { tokenNetwork, target, value } = action.meta;
+        const channelCanRoutePossible = channelCanRoute(
+          state,
+          presences,
+          tokenNetwork,
+          recipient,
+          target,
+          value,
+        );
+        shouldSelectPath = channelCanRoutePossible === true;
+        reasonToNotSelect =
+          typeof channelCanRoutePossible === 'string' ? channelCanRoutePossible : '';
+      } else if (recipient !== filteredPaths[0].path[0]) {
+        reasonToNotSelect = 'path: already selected another recipient';
+      } else if (fee.gt(filteredPaths[0].fee)) {
+        reasonToNotSelect = 'path: already selected a smaller fee';
+      } else {
+        shouldSelectPath = true;
+      }
+
+      if (shouldSelectPath) {
+        filteredPaths.push({ path: cleanPath, fee });
+      } else {
+        log.warn('Invalidated received route. Reason:', reasonToNotSelect, 'Route:', cleanPath);
+        invalidatedRecipients.add(recipient);
+      }
+    }
+  }
+
+  return filteredPaths;
+}
+
+function getPsfInfo$(
+  pfsByAction: PFS | null | undefined,
+  pfsByConfig: string | Address | null,
+  deps: RaidenEpicDeps,
+): Observable<PFS> {
+  if (pfsByAction) return of(pfsByAction);
+  else if (pfsByConfig) return pfsInfo(pfsByConfig, deps);
+  else {
+    const { log, latest$ } = deps;
+    return latest$.pipe(
+      pluck('pfsList'), // get cached pfsList
+      first((pfsList) => pfsList.length > 0), // if needed, wait for list to be populated
+      mergeMap((pfsList) => pfsListInfo(pfsList, deps)), // fetch pfsInfo from whole list & sort it
+      tap((pfsInfos) => log.info('Auto-selecting best PFS from:', pfsInfos)),
+      pluck(0), // pop best ranked
+    );
+  }
+}
+
+function getIouForPfs(
+  pfs: PFS,
+  tokenNetwork: Address,
+  deps: RaidenEpicDeps,
+): Observable<{ pfs: PFS; iou: Signed<IOU> | undefined }> {
+  if (pfs.price.isZero()) {
+    return of({ pfs, iou: undefined });
+  } else {
+    return prepareNextIOU$(pfs, tokenNetwork, deps).pipe(map((iou) => ({ pfs, iou })));
+  }
+}
+
+function requestPfs$(
+  pfs: PFS,
+  iou: Signed<IOU> | undefined,
+  tokenNetwork: Address,
+  address: Address,
+  target: Address,
+  value: UInt<32>,
+  { httpTimeout, pfsMaxPaths }: Pick<RaidenConfig, 'httpTimeout' | 'pfsMaxPaths'>,
+): Observable<{ pfsResponse: Response; responseText: string; iou: Signed<IOU> | undefined }> {
+  const body = jsonStringify({
+    from: address,
+    to: target,
+    value: UInt(32).encode(value),
+    max_paths: pfsMaxPaths,
+    iou: iou
+      ? {
+          ...iou,
+          amount: UInt(32).encode(iou.amount),
+          expiration_block: UInt(32).encode(iou.expiration_block),
+          chain_id: UInt(32).encode(iou.chain_id),
+        }
+      : undefined,
+  });
+
+  return fromFetch(`${pfs.url}/api/v1/${tokenNetwork}/paths`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  }).pipe(
+    timeout(httpTimeout),
+    mergeMap(async (pfsResponse) => ({
+      pfsResponse,
+      responseText: await pfsResponse.text(),
+      iou,
+    })),
+  );
+}
+
+function parsePfsResponse(
+  pfsResponse: Response,
+  responseText: string,
+  iou: Signed<IOU> | undefined,
+  { pfsSafetyMargin, pfsMaxPaths }: RaidenConfig,
+): Route {
+  // any decode error here will throw early and end up in catchError
+  const data = jsonParse(responseText);
+
+  if (!pfsResponse.ok) {
+    const error = decode(PathError, data);
+    return { iou, error };
+  } else {
+    // decode results and cap also client-side for pfsMaxPaths
+    const results = decode(PathResults, data).result.filter((_, idx) => idx < pfsMaxPaths);
+    const paths = results.map(({ path, estimated_fee }) => {
+      const fee = estimated_fee.mul(Math.round(pfsSafetyMargin * 1e6)).div(1e6) as Int<32>;
+      return { path, fee } as const;
+    });
+    return { paths, iou };
+  }
+}
+
+function shouldPersistIou(route: Route): boolean {
+  const { paths, error } = route;
+  return paths !== undefined || isNoRouteFoundError(error);
+}
+
+function getCleanPath(path: readonly Address[], address: Address): readonly Address[] {
+  if (path[0] === address) {
+    return path.slice(1);
+  } else {
+    return path;
+  }
+}
+
+function isNoRouteFoundError(error: PathError | undefined): boolean {
+  return error?.error_code === 2201;
+}

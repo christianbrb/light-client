@@ -1,5 +1,6 @@
 jest.mock('vue-router');
 jest.mock('@/services/raiden-service');
+jest.mock('@/i18n', () => jest.fn());
 import Mocked = jest.Mocked;
 import { shallowMount, Wrapper } from '@vue/test-utils';
 import Vue from 'vue';
@@ -9,7 +10,6 @@ import store from '@/store/index';
 import Vuetify from 'vuetify';
 import RaidenService from '@/services/raiden-service';
 import App from '@/App.vue';
-import { Capabilities } from 'raiden-ts';
 
 Vue.use(VueRouter);
 Vue.use(Vuex);
@@ -35,8 +35,8 @@ describe('App.vue', () => {
       mocks: {
         $router: router,
         $raiden: $raiden,
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
     });
   });
 
@@ -50,21 +50,5 @@ describe('App.vue', () => {
     wrapper.vm.$destroy();
 
     expect($raiden.disconnect).toHaveBeenCalledTimes(1);
-  });
-
-  test("show ReceivingDiabled dialog if can't receive", async () => {
-    expect.assertions(2);
-
-    store.commit('updateConfig', {
-      caps: { [Capabilities.NO_RECEIVE]: false }
-    });
-    await wrapper.vm.$nextTick();
-    expect(wrapper.vm.$data.showReceivingDisabled).toBe(false);
-
-    store.commit('updateConfig', {
-      caps: { [Capabilities.NO_RECEIVE]: true }
-    });
-    await wrapper.vm.$nextTick();
-    expect(wrapper.vm.$data.showReceivingDisabled).toBe(true);
   });
 });

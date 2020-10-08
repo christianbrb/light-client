@@ -7,12 +7,7 @@
       justify="center"
     >
       <v-col cols="12">
-        <v-row
-          v-if="loading"
-          align="center"
-          justify="center"
-          class="pathfinding-services__loading"
-        >
+        <v-row v-if="loading">
           <spinner />
         </v-row>
         <v-row
@@ -38,7 +33,7 @@
           class="pathfinding-services__table"
           @item-selected="select($event)"
         >
-          <template #item.host="{ item }">
+          <template #[`item.host`]="{ item }">
             <v-tooltip bottom>
               <template #activator="{ on }">
                 <div class="pathfinding-services__table__pfs">
@@ -54,7 +49,7 @@
             </v-tooltip>
           </template>
 
-          <template #item.price="{ item }">
+          <template #[`item.price`]="{ item }">
             <amount-display
               exact-amount
               :amount="item.price"
@@ -94,13 +89,13 @@ export default class PathfindingServices extends Vue {
       {
         text: this.$t('pathfinding-services.headers.host') as string,
         value: 'host',
-        align: 'left'
+        align: 'left',
       },
       {
         text: this.$t('pathfinding-services.headers.price') as string,
         value: 'price',
-        align: 'right'
-      }
+        align: 'right',
+      },
     ];
     this.fetchServices();
   }
@@ -108,7 +103,7 @@ export default class PathfindingServices extends Vue {
   @Emit()
   select({
     item,
-    value
+    value,
   }: {
     item: RaidenPFS;
     value: boolean;
@@ -132,7 +127,7 @@ export default class PathfindingServices extends Vue {
         this.select({ item: preSelectedPfs, value: true });
       }
       const tokens = this.services
-        .map(value => value.token)
+        .map((value) => value.token)
         .filter((value, index, array) => array.indexOf(value) === index);
 
       await this.$raiden.fetchTokenData(tokens);

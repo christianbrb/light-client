@@ -121,13 +121,7 @@
       justify="center"
       align="center"
     >
-      <v-progress-circular
-        :size="125"
-        :width="4"
-        class="address-input__prepend"
-        indeterminate
-        color="primary"
-      />
+      <spinner />
       <p class="raiden-account__progress-hint">
         {{ $t('raiden-account.in-progress') }}
       </p>
@@ -142,15 +136,16 @@ import { mapGetters, mapState } from 'vuex';
 import AmountInput from '@/components/AmountInput.vue';
 import ActionButton from '@/components/ActionButton.vue';
 import ErrorMessage from '@/components/ErrorMessage.vue';
+import Spinner from '@/components/icons/Spinner.vue';
 import { Token } from '@/model/types';
 import { bigNumberify, parseEther, BigNumber } from 'ethers/utils';
 
 @Component({
-  components: { AmountInput, ActionButton, ErrorMessage },
+  components: { AmountInput, ActionButton, ErrorMessage, Spinner },
   computed: {
     ...mapState(['raidenAccountBalance', 'accountBalance']),
-    ...mapGetters(['isConnected'])
-  }
+    ...mapGetters(['isConnected']),
+  },
 })
 export default class RaidenAccount extends Vue {
   isConnected!: boolean;
@@ -166,7 +161,7 @@ export default class RaidenAccount extends Vue {
     decimals: 18,
     symbol: 'ETH',
     name: 'Ether',
-    balance: 0
+    balance: 0,
   };
 
   mounted() {
@@ -208,8 +203,8 @@ export default class RaidenAccount extends Vue {
 </script>
 
 <style scoped lang="scss">
-@import '../../scss/mixins';
-@import '../../scss/colors';
+@import '@/scss/mixins';
+@import '@/scss/colors';
 
 .raiden-account {
   width: 100%;

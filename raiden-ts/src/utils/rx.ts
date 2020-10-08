@@ -1,44 +1,27 @@
-import { Observable, OperatorFunction, from } from 'rxjs';
-import { pluck, distinctUntilChanged, mergeMap, scan, filter } from 'rxjs/operators';
+import {
+  Observable,
+  OperatorFunction,
+  pairs,
+  MonoTypeOperatorFunction,
+  defer,
+  throwError,
+  timer,
+} from 'rxjs';
+import {
+  pluck,
+  distinctUntilChanged,
+  mergeMap,
+  scan,
+  filter,
+  repeatWhen,
+  takeUntil,
+  retryWhen,
+  takeWhile,
+  map,
+  switchMap,
+} from 'rxjs/operators';
 import { isntNil } from './types';
 
-// overloads
-export function pluckDistinct<T, K1 extends keyof T>(k1: K1): OperatorFunction<T, T[K1]>;
-export function pluckDistinct<T, K1 extends keyof T, K2 extends keyof T[K1]>(
-  k1: K1,
-  k2: K2,
-): OperatorFunction<T, T[K1][K2]>;
-export function pluckDistinct<
-  T,
-  K1 extends keyof T,
-  K2 extends keyof T[K1],
-  K3 extends keyof T[K1][K2]
->(k1: K1, k2: K2, k3: K3): OperatorFunction<T, T[K1][K2][K3]>;
-export function pluckDistinct<
-  T,
-  K1 extends keyof T,
-  K2 extends keyof T[K1],
-  K3 extends keyof T[K1][K2],
-  K4 extends keyof T[K1][K2][K3]
->(k1: K1, k2: K2, k3: K3, k4: K4): OperatorFunction<T, T[K1][K2][K3][K4]>;
-export function pluckDistinct<
-  T,
-  K1 extends keyof T,
-  K2 extends keyof T[K1],
-  K3 extends keyof T[K1][K2],
-  K4 extends keyof T[K1][K2][K3],
-  K5 extends keyof T[K1][K2][K3][K4]
->(k1: K1, k2: K2, k3: K3, k4: K4, k5: K5): OperatorFunction<T, T[K1][K2][K3][K4][K5]>;
-export function pluckDistinct<
-  T,
-  K1 extends keyof T,
-  K2 extends keyof T[K1],
-  K3 extends keyof T[K1][K2],
-  K4 extends keyof T[K1][K2][K3],
-  K5 extends keyof T[K1][K2][K3][K4],
-  K6 extends keyof T[K1][K2][K3][K4][K5]
->(k1: K1, k2: K2, k3: K3, k4: K4, k5: K5, k6: K6): OperatorFunction<T, T[K1][K2][K3][K4][K5][K6]>;
-export function pluckDistinct<T, R>(...properties: string[]): OperatorFunction<T, R>;
 /**
  * Maps each source value (an object) to its specified nested property,
  * and emits only if the value changed since last emission
@@ -48,14 +31,9 @@ export function pluckDistinct<T, R>(...properties: string[]): OperatorFunction<T
  * @param properties - The nested properties to pluck from each source value (an object).
  * @returns A new Observable of property values from the source values.
  */
-export function pluckDistinct<T, R>(...properties: string[]): OperatorFunction<T, R> {
-  /**
-   * @param source - Input observable
-   * @returns Observable of plucked & distinct values
-   */
-  return (source: Observable<T>) =>
-    source.pipe(pluck<T, R>(...properties), distinctUntilChanged());
-}
+export const pluckDistinct: typeof pluck = <T, R>(...properties: string[]) => (
+  source: Observable<T>,
+) => source.pipe(pluck<T, R>(...properties), distinctUntilChanged());
 
 /**
  * Creates an operator to output changed values unique by key ([key, value] tuples)
@@ -70,7 +48,7 @@ export function distinctRecordValues<R>(
   return (input: Observable<Record<string, R>>): Observable<[string, R]> =>
     input.pipe(
       distinctUntilChanged(),
-      mergeMap((map) => from(Object.entries(map))),
+      mergeMap((map) => pairs<R>(map)),
       /* this scan stores a reference to each [key,value] in 'acc', and emit as 'changed' iff it
        * changes from last time seen. It relies on value references changing only if needed */
       scan<[string, R], { acc: { [k: string]: R }; changed?: [string, R] }>(
@@ -84,5 +62,95 @@ export function distinctRecordValues<R>(
       ),
       pluck('changed'),
       filter(isntNil), // filter out if reference didn't change from last emit
+    );
+}
+
+/**
+ * Operator to repeat-subscribe an input observable until a notifier emits
+ *
+ * @param notifier - Notifier observable to stop repeating
+ * @param delayMs - Delay between retries or an Iterator of delays; in milliseconds
+ * @returns Monotype operator function
+ */
+export function repeatUntil<T>(
+  notifier: Observable<unknown>,
+  delayMs: number | Iterator<number> = 30e3,
+): MonoTypeOperatorFunction<T> {
+  // Resubscribe/retry every 30s or yielded ms after messageSend succeeds
+  // Notice first (or any) messageSend.request can wait for a long time before succeeding, as it
+  // waits for address's user in transport to be online and joined room before actually
+  // sending the message. That's why repeatWhen emits/resubscribe only some time after
+  // sendOnceAndWaitSent$ completes, instead of a plain 'interval'
+  return (input$) =>
+    input$.pipe(
+      repeatWhen((completed$) =>
+        completed$.pipe(
+          map(() => {
+            if (typeof delayMs === 'number') return delayMs;
+            const next = delayMs.next();
+            return !next.done ? next.value : -1;
+          }),
+          takeWhile((value) => value >= 0), // stop repeatWhen when done
+          switchMap((value) => timer(value)),
+        ),
+      ),
+      takeUntil(notifier),
+    );
+}
+
+/**
+ * Receives an async function and returns an observable which will retry it every interval until it
+ * resolves, or throw if it can't succeed after 10 retries.
+ * It is needed e.g. on provider methods which perform RPC requests directly, as they can fail
+ * temporarily due to network errors, so they need to be retried for a while.
+ * JsonRpcProvider._doPoll also catches, suppresses & retry
+ *
+ * @param func - An async function (e.g. a Promise factory, like a defer callback)
+ * @param interval - Interval to retry in case of rejection
+ * @param stopPredicate - Stops retrying and throws if this function returns a truty value;
+ *      Receives error and retry count; Default: stops after 10 retries
+ * @returns Observable version of async function, with retries
+ */
+export function retryAsync$<T>(
+  func: () => Promise<T>,
+  interval = 1e3,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  stopPredicate: (err: any, count: number) => boolean | undefined = (_, count) => count >= 10,
+): Observable<T> {
+  return defer(func).pipe(
+    retryWhen((error$) =>
+      error$.pipe(
+        mergeMap((error, count) =>
+          stopPredicate(error, count) ? throwError(error) : timer(interval),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * RxJS operator to keep subscribed to input$ if condition is truty (or falsy, if negated),
+ * unsubscribe if it becomes falsy, and re-subscribes if it becomes truty again (input$ must be
+ * re-subscribable).
+ *
+ * @param cond$ - Condition observable
+ * @param negate - Whether to negate condition
+ *      (i.e. keep subscribed while falsy, unsubscribe when truty)
+ * @returns monotype operator to unsubscribe and re-subscribe to source/input based on confition
+ */
+export function takeIf<T>(
+  cond$: Observable<unknown>,
+  negate = false,
+): MonoTypeOperatorFunction<T> {
+  const distinctCond$ = cond$.pipe(
+    map((cond) => (negate ? !cond : !!cond)),
+    distinctUntilChanged(),
+  );
+  return (input$) =>
+    input$.pipe(
+      // unsubscribe input$ when cond becomes falsy
+      takeUntil(distinctCond$.pipe(filter((cond): cond is false => !cond))),
+      // re-subscribe input$ when cond becomes truty
+      repeatWhen(() => distinctCond$.pipe(filter((cond): cond is true => cond))),
     );
 }

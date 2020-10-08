@@ -17,7 +17,7 @@
               <div
                 class="backup-state__buttons__download-state__icon"
                 :class="{
-                  'backup-state__buttons__download-state__icon disabled-icon': !isConnected
+                  'backup-state__buttons__download-state__icon disabled-icon': !isConnected,
                 }"
               >
                 <v-img :src="require('@/assets/state_download.png')"></v-img>
@@ -36,13 +36,14 @@
         <template #activator="{ on }">
           <div v-on="isConnected ? on : null">
             <v-list-item
+              :disabled="isConnected"
               class="backup-state__buttons__upload-state"
               @click="uploadState = true"
             >
               <div
                 class="backup-state__buttons__upload-state__icon"
                 :class="{
-                  'backup-state__buttons__upload-state__icon disabled-icon': isConnected
+                  'backup-state__buttons__upload-state__icon disabled-icon': isConnected,
                 }"
               >
                 <v-img :src="require('@/assets/state_upload.png')"></v-img>
@@ -78,9 +79,9 @@ import UploadStateDialog from '@/components/account/backup-state/UploadStateDial
 @Component({
   components: {
     DownloadStateDialog,
-    UploadStateDialog
+    UploadStateDialog,
   },
-  computed: { ...mapGetters(['isConnected']) }
+  computed: { ...mapGetters(['isConnected']) },
 })
 export default class BackupState extends Vue {
   isConnected!: boolean;
@@ -90,7 +91,7 @@ export default class BackupState extends Vue {
 </script>
 
 <style scoped lang="scss">
-@import '../../scss/colors';
+@import '@/scss/colors';
 
 .backup-state {
   &__description {
@@ -123,7 +124,7 @@ export default class BackupState extends Vue {
       }
 
       &__title {
-        font-size: 22px;
+        font-size: 20px;
         line-height: 30px;
         padding-left: 20px;
         text-align: center;

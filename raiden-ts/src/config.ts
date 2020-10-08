@@ -1,5 +1,6 @@
 import * as t from 'io-ts';
 import { Network, parseEther } from 'ethers/utils';
+import { MaxUint256 } from 'ethers/constants';
 
 import { Capabilities } from './constants';
 import { Address, UInt } from './utils/types';
@@ -24,11 +25,15 @@ const RTCIceServer = t.type({ urls: t.union([t.string, t.array(t.string)]) });
  * - httpTimeout - Used in http fetch requests
  * - discoveryRoom - Discovery Room to auto-join, use null to disable
  * - pfsRoom - PFS Room to auto-join and send PFSCapacityUpdate to, use null to disable
- * - monitoringRoom - MS global room to auto-join and send RequestMonitoring messages, use null to disable
+ * - monitoringRoom - MS global room to auto-join and send RequestMonitoring messages;
+ *      use null to disable
  * - pfs - Path Finding Service URL or Address. Set to null to disable, or empty string to enable
  *         automatic fetching from ServiceRegistry.
  * - pfsSafetyMargin - Safety margin to be added to fees received from PFS. Use `1.1` to add a 10%
  *                     safety margin.
+ * - pfsMaxPaths - Limit number of paths requested from PFS for a route.
+ * - pfsMaxFee - Maximum fee we're willing to pay a PFS for a route (in SVT/RDN wei)
+ * - pfsIouTimeout - Number of blocks to timeout an IOU to a PFS.
  * - matrixExcessRooms - Keep this much rooms for a single user of interest (partner, target).
  *                       Leave LRU beyond this threshold.
  * - confirmationBlocks - How many blocks to wait before considering a transaction as confirmed
@@ -37,6 +42,12 @@ const RTCIceServer = t.type({ urls: t.union([t.string, t.array(t.string)]) });
  * - caps - Own transport capabilities overrides. Set to null to disable all, including defaults
  * - fallbackIceServers - STUN servers to be used as a fallback for WebRTC
  * - rateToSvt - Exchange rate between tokens and SVT, in wei: e.g. rate[TKN]=2e18 => 1TKN = 2SVT
+ * - pollingInterval - Interval at which to poll ETH provider for new blocks/events (milliseconds)
+ *      Honored only at start time
+ * - minimumAllowance - Minimum value to call `approve` on tokens; default to MaxUint256, so
+ *      approving tokens should be needed only once, trusting TokenNetwork's & UDC contracts;
+ *      Set to Zero to fallback to approving the strictly needed deposit amounts
+ * - autoSettle - Whether to channelSettle.request settleable channels automatically
  * - matrixServer? - Specify a matrix server to use.
  * - subkey? - When using subkey, this sets the behavior when { subkey } option isn't explicitly
  *             set in on-chain method calls. false (default) = use main key; true = use subkey
@@ -53,6 +64,9 @@ export const RaidenConfig = t.readonly(
       monitoringRoom: t.union([t.string, t.null]),
       pfs: t.union([Address, t.string, t.null]),
       pfsSafetyMargin: t.number,
+      pfsMaxPaths: t.number,
+      pfsMaxFee: UInt(32),
+      pfsIouTimeout: t.number,
       matrixExcessRooms: t.number,
       confirmationBlocks: t.number,
       monitoringReward: t.union([t.null, UInt(32)]),
@@ -67,6 +81,9 @@ export const RaidenConfig = t.readonly(
       caps: t.union([t.null, Caps]),
       fallbackIceServers: t.array(RTCIceServer),
       rateToSvt: t.record(t.string, UInt(32)),
+      pollingInterval: t.number,
+      minimumAllowance: UInt(32),
+      autoSettle: t.boolean,
     }),
     t.partial({
       matrixServer: t.string,
@@ -77,7 +94,9 @@ export const RaidenConfig = t.readonly(
 export interface RaidenConfig extends t.TypeOf<typeof RaidenConfig> {}
 
 export const PartialRaidenConfig = t.readonly(
-  t.partial({ ...RaidenConfig.type.types['0'].props, ...RaidenConfig.type.types['1'].props }),
+  t.exact(
+    t.partial({ ...RaidenConfig.type.types['0'].props, ...RaidenConfig.type.types['1'].props }),
+  ),
 );
 export interface PartialRaidenConfig extends t.TypeOf<typeof PartialRaidenConfig> {}
 
@@ -104,7 +123,10 @@ export function makeDefaultConfig(
     monitoringRoom: `raiden_${getNetworkName(network)}_monitoring`,
     pfs: '', // empty string = auto mode
     matrixExcessRooms: 3,
-    pfsSafetyMargin: 1.0,
+    pfsSafetyMargin: 1.0, // multiplier
+    pfsMaxPaths: 3,
+    pfsMaxFee: parseEther('0.05') as UInt<32>, // in SVT/RDN, 18 decimals
+    pfsIouTimeout: 200000, // in blocks
     confirmationBlocks: 5,
     // SVT also uses 18 decimals, like Ether, so parseEther works
     monitoringReward: parseEther('5') as UInt<32>,
@@ -116,6 +138,9 @@ export function makeDefaultConfig(
     },
     fallbackIceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     rateToSvt: {},
+    pollingInterval: 5000,
+    minimumAllowance: MaxUint256 as UInt<32>,
+    autoSettle: false,
     ...overwrites,
   };
 }

@@ -37,10 +37,8 @@
               class="transfer-progress-dialog--error"
             ></v-img>
           </div>
-          <v-progress-linear
+          <spinner
             v-else-if="inProgress"
-            indeterminate
-            color="primary"
             class="transfer-progress-dialog--progress"
           />
         </v-col>
@@ -51,10 +49,7 @@
             <span v-if="error">
               {{ error }}
             </span>
-            <span v-else-if="inProgress">
-              {{ $t('transfer.steps.transfer.description') }}
-            </span>
-            <span v-else>
+            <span v-else-if="!inProgress">
               {{ $t('transfer.steps.done.description') }}
             </span>
           </div>
@@ -71,14 +66,15 @@ import { mapGetters, mapState } from 'vuex';
 import { BigNumber } from 'ethers/utils';
 
 import RaidenDialog from '@/components/dialogs/RaidenDialog.vue';
+import Spinner from '@/components/icons/Spinner.vue';
 import { Transfers } from '@/types';
 
 @Component({
-  components: { RaidenDialog },
+  components: { RaidenDialog, Spinner },
   computed: {
     ...mapState(['transfers']),
-    ...mapGetters(['transfer'])
-  }
+    ...mapGetters(['transfer']),
+  },
 })
 export default class TransferProgressDialog extends Vue {
   @Prop({ required: true })

@@ -1,6 +1,6 @@
 <template>
   <div class="address__container">
-    <v-tooltip bottom close-delay="1400">
+    <v-tooltip bottom>
       <template #activator="{ on }">
         <p class="address__label" v-on="on" @click="copy">
           {{ addressOutput }}
@@ -72,8 +72,8 @@ export default class AddressDisplay extends Vue {
 </script>
 
 <style lang="scss" scoped>
-@import '../scss/colors';
-@import '../scss/fonts';
+@import '@/scss/colors';
+@import '@/scss/fonts';
 
 .address {
   &__container {
@@ -83,6 +83,7 @@ export default class AddressDisplay extends Vue {
     line-height: 19px;
     display: flex;
     align-items: center;
+    width: fit-content;
   }
 
   &__tooltip {
@@ -101,6 +102,7 @@ export default class AddressDisplay extends Vue {
   }
 
   &__input {
+    color: $color-white;
     width: 340px;
     text-align: center;
   }

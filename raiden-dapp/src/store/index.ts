@@ -1,15 +1,14 @@
 import Vue from 'vue';
 import VuexPersistence from 'vuex-persist';
 import Vuex, { StoreOptions } from 'vuex';
-import { RootState, Tokens, Transfers, Settings } from '@/types';
+import { RootState, Settings, Tokens, Transfers } from '@/types';
 import {
   ChannelState,
+  getNetworkName,
   RaidenChannel,
   RaidenChannels,
-  RaidenTransfer,
   RaidenConfig,
-  Capabilities,
-  getNetworkName
+  RaidenTransfer,
 } from 'raiden-ts';
 import {
   AccTokenModel,
@@ -18,7 +17,7 @@ import {
   PlaceHolderNetwork,
   Token,
   TokenModel,
-  Presences
+  Presences,
 } from '@/model/types';
 import map from 'lodash/map';
 import flatMap from 'lodash/flatMap';
@@ -28,12 +27,14 @@ import reduce from 'lodash/reduce';
 import orderBy from 'lodash/orderBy';
 import isEqual from 'lodash/isEqual';
 import isEmpty from 'lodash/isEmpty';
-import { Network, BigNumber } from 'ethers/utils';
+import { BigNumber, Network } from 'ethers/utils';
+import { notifications } from '@/store/notifications';
 
 Vue.use(Vuex);
 
 const _defaultState: RootState = {
   loading: true,
+  blockNumber: 0,
   defaultAccount: '',
   accountBalance: '0.0',
   raidenAccountBalance: '',
@@ -41,15 +42,19 @@ const _defaultState: RootState = {
   accessDenied: DeniedReason.UNDEFINED,
   channels: {},
   tokens: {},
+  tokenAddresses: [],
   transfers: {},
   presences: {},
   network: PlaceHolderNetwork,
   stateBackup: '',
   settings: {
     isFirstTimeConnect: true,
-    useRaidenAccount: true
+    useRaidenAccount: true,
   },
-  config: {}
+  config: {},
+  userDepositTokenAddress: '',
+  disclaimerAccepted: false,
+  persistDisclaimerAcceptance: false,
 };
 
 export function defaultState(): RootState {
@@ -66,10 +71,19 @@ const hasNonZeroBalance = (a: Token, b: Token) =>
   (!(a.balance as BigNumber).isZero() || !(b.balance as BigNumber).isZero());
 
 const settingsLocalStorage = new VuexPersistence<RootState>({
-  storage: window.localStorage,
-  reducer: state => ({ settings: state.settings }),
-  filter: mutation => mutation.type == 'updateSettings',
-  key: 'raiden_dapp_settings'
+  reducer: (state) => ({ settings: state.settings }),
+  filter: (mutation) => mutation.type == 'updateSettings',
+  key: 'raiden_dapp_settings',
+});
+
+const disclaimerAcceptedLocalStorage = new VuexPersistence<RootState>({
+  reducer: (state) => ({
+    disclaimerAccepted: state.persistDisclaimerAcceptance
+      ? state.disclaimerAccepted
+      : false,
+  }),
+  filter: (mutation) => mutation.type === 'acceptDisclaimer',
+  key: 'raiden_dapp_disclaimer_accepted',
 });
 
 const store: StoreOptions<RootState> = {
@@ -86,6 +100,9 @@ const store: StoreOptions<RootState> = {
     },
     loadComplete(state: RootState) {
       state.loading = false;
+    },
+    updateBlock(state: RootState, block: number) {
+      state.blockNumber = block;
     },
     balance(state: RootState, balance: string) {
       state.accountBalance = balance;
@@ -104,6 +121,9 @@ const store: StoreOptions<RootState> = {
           state.tokens[address] = { ...state.tokens[address], ...token };
         else state.tokens = { ...state.tokens, [address]: token };
     },
+    updateTokenAddresses(state: RootState, addresses: string[]) {
+      state.tokenAddresses = [...addresses];
+    },
     updatePresence(state: RootState, presence: Presences) {
       state.presences = { ...state.presences, ...presence };
     },
@@ -111,10 +131,15 @@ const store: StoreOptions<RootState> = {
       state.network = network;
     },
     reset(state: RootState) {
-      // Preserve settings when resetting state
-      const { settings } = state;
+      // Preserve settings and backup when resetting state
+      const { settings, disclaimerAccepted, stateBackup } = state;
 
-      Object.assign(state, { ...defaultState(), settings });
+      Object.assign(state, {
+        ...defaultState(),
+        settings,
+        disclaimerAccepted,
+        stateBackup,
+      });
     },
     updateTransfers(state: RootState, transfer: RaidenTransfer) {
       state.transfers = { ...state.transfers, [transfer.key]: transfer };
@@ -127,11 +152,18 @@ const store: StoreOptions<RootState> = {
     },
     updateConfig(state: RootState, config: Partial<RaidenConfig>) {
       state.config = config;
-    }
+    },
+    userDepositTokenAddress(state: RootState, address: string) {
+      state.userDepositTokenAddress = address;
+    },
+    acceptDisclaimer(state: RootState, persistDecision: boolean) {
+      state.disclaimerAccepted = true;
+      state.persistDisclaimerAcceptance = persistDecision;
+    },
   },
   actions: {},
   getters: {
-    tokens: function(state: RootState): TokenModel[] {
+    tokens: function (state: RootState): TokenModel[] {
       const reducer = (
         acc: AccTokenModel,
         channel: RaidenChannel
@@ -142,8 +174,8 @@ const store: StoreOptions<RootState> = {
       };
 
       return map(
-        filter(flatMap(state.channels), channels => !isEmpty(channels)),
-        tokenChannels => {
+        filter(flatMap(state.channels), (channels) => !isEmpty(channels)),
+        (tokenChannels) => {
           const model = reduce(tokenChannels, reducer, emptyTokenModel());
           const tokenInfo = state.tokens[model.address];
           if (tokenInfo) {
@@ -156,13 +188,16 @@ const store: StoreOptions<RootState> = {
       );
     },
     allTokens: (state: RootState): Token[] =>
-      Object.values(state.tokens).sort((a: Token, b: Token) => {
-        if (hasNonZeroBalance(a, b)) {
-          return (b.balance! as BigNumber).gt(a.balance! as BigNumber) ? 1 : -1;
-        }
-
-        return a.symbol && b.symbol ? a.symbol.localeCompare(b.symbol) : 0;
-      }),
+      Object.values(state.tokens)
+        .filter((token) => state.tokenAddresses.includes(token.address))
+        .sort((a: Token, b: Token) => {
+          if (hasNonZeroBalance(a, b)) {
+            return (b.balance! as BigNumber).gt(a.balance! as BigNumber)
+              ? 1
+              : -1;
+          }
+          return a.symbol && b.symbol ? a.symbol.localeCompare(b.symbol) : 0;
+        }),
     channels: (state: RootState) => (tokenAddress: string) => {
       let channels: RaidenChannel[] = [];
       const tokenChannels = state.channels[tokenAddress];
@@ -170,6 +205,9 @@ const store: StoreOptions<RootState> = {
         channels = flatMap(tokenChannels);
       }
       return channels;
+    },
+    openChannels: (state: RootState) => {
+      return Object.keys(state.channels).length > 0;
     },
     token: (state: RootState) => (tokenAddress: string) => {
       if (tokenAddress in state.tokens) {
@@ -187,13 +225,13 @@ const store: StoreOptions<RootState> = {
     channelWithBiggestCapacity: (_, getters) => (tokenAddress: string) => {
       const channels: RaidenChannel[] = getters.channels(tokenAddress);
       const openChannels = channels.filter(
-        value => value.state === ChannelState.open
+        (value) => value.state === ChannelState.open
       );
       return orderBy(openChannels, ['capacity'], ['desc'])[0];
     },
     pendingTransfers: ({ transfers }: RootState) =>
       Object.keys(transfers)
-        .filter(key => {
+        .filter((key) => {
           const { completed } = transfers[key];
 
           // return whether transfer is pending or not
@@ -204,15 +242,9 @@ const store: StoreOptions<RootState> = {
           return pendingTransfers;
         }, {}),
     transfer: (state: RootState) => (paymentId: BigNumber) => {
-      const key = Object.keys(state.transfers).find(
-        key => state.transfers[key].paymentId === paymentId
+      return Object.values(state.transfers).find((transfer) =>
+        transfer.paymentId.eq(paymentId)
       );
-
-      if (key) {
-        return state.transfers[key];
-      }
-
-      return undefined;
     },
     isConnected: (state: RootState): boolean => {
       return (
@@ -225,11 +257,14 @@ const store: StoreOptions<RootState> = {
         ? state.raidenAccountBalance
         : state.accountBalance;
     },
-    canReceive: (state: RootState): boolean => {
-      return !state.config.caps?.[Capabilities.NO_RECEIVE];
-    }
+    udcToken: (state: RootState): Token => {
+      return state.tokens[state.userDepositTokenAddress];
+    },
   },
-  plugins: [settingsLocalStorage.plugin]
+  plugins: [settingsLocalStorage.plugin, disclaimerAcceptedLocalStorage.plugin],
+  modules: {
+    notifications,
+  },
 };
 
 export default new Vuex.Store(store);

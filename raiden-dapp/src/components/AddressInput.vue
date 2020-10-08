@@ -4,11 +4,13 @@
       id="address-input"
       ref="address"
       v-model="address"
+      :disabled="disabled"
       :error-messages="errorMessages"
       :rules="isAddressValid"
+      :hide-details="hideErrorLabel"
       :class="{
         'address-input--invalid': !valid && touched,
-        'address-input--untouched': !touched
+        'address-input--untouched': !touched,
       }"
       :placeholder="$t('address-input.input.placeholder')"
       persistent-hint
@@ -23,31 +25,25 @@
           class="address-input__availability"
           :class="{
             'address-input__availability--online': isAddressAvailable,
-            'address-input__availability--offline': !isAddressAvailable
+            'address-input__availability--offline': !isAddressAvailable,
           }"
         >
           <img
             :src="$blockie(value)"
             :alt="$t('address-input.blockie-alt')"
-            class="address-input__blockie address-input__prepend"
+            class="address-input__blockie"
           />
         </div>
-        <div v-else-if="busy">
-          <v-progress-circular
-            size="22"
-            class="address-input__prepend"
-            indeterminate
-            color="primary"
-          ></v-progress-circular>
-        </div>
-        <div v-else></div>
       </template>
       <template #append>
-        <span class="address-input__qr-code">
+        <span v-if="!busy" class="address-input__qr-code">
           <qr-code
             @click.native="isQrCodeOverlayVisible = !isQrCodeOverlayVisible"
           />
         </span>
+        <div v-else>
+          <spinner :size="22" :width="2" :inline="true" />
+        </div>
       </template>
     </v-text-field>
     <qr-code-overlay
@@ -64,6 +60,7 @@ import { mapState } from 'vuex';
 
 import QrCode from '@/components/icons/QrCode.vue';
 import QrCodeOverlay from '@/components/overlays/QrCodeOverlay.vue';
+import Spinner from '@/components/icons/Spinner.vue';
 import { Presences } from '@/model/types';
 import AddressUtils from '@/utils/address-utils';
 import BlockieMixin from '@/mixins/blockie-mixin';
@@ -75,14 +72,14 @@ import {
   Observable,
   of,
   partition,
-  Subscription
+  Subscription,
 } from 'rxjs';
 import {
   catchError,
   debounceTime,
   map,
   switchMap,
-  tap
+  tap,
 } from 'rxjs/internal/operators';
 
 type ValidationResult = {
@@ -92,31 +89,43 @@ type ValidationResult = {
 };
 
 @Component({
-  components: { QrCode, QrCodeOverlay },
-  computed: { ...mapState(['presences']) }
+  components: { QrCode, QrCodeOverlay, Spinner },
+  computed: { ...mapState(['presences']) },
 })
 export default class AddressInput extends Mixins(BlockieMixin) {
   private valueChange = new BehaviorSubject<string | undefined>('');
   private subscription?: Subscription;
 
-  @Prop({})
+  @Prop({ required: false, default: false, type: Boolean })
+  hideErrorLabel!: boolean;
+  @Prop()
   disabled!: boolean;
   @Prop({ required: true })
   value!: string;
 
   @Prop({
-    default: function() {
+    default: function () {
       return [''];
-    }
+    },
   })
   exclude!: Array<string>;
 
   @Prop({
-    default: function() {
+    default: function () {
       return [''];
-    }
+    },
   })
   block!: Array<string>;
+
+  @Emit()
+  inputError(errorMessage: string) {
+    return errorMessage;
+  }
+
+  @Watch('errorMessages', { immediate: true })
+  updateError() {
+    this.inputError(this.errorMessages[0]);
+  }
 
   address: string = '';
 
@@ -134,6 +143,8 @@ export default class AddressInput extends Mixins(BlockieMixin) {
     // as the input being invalid. Since the :rules prop does not support
     // async rules we have to workaround with a reactive prop
     const isAddressValid =
+      this.address &&
+      this.address.trim() !== '' &&
       !this.busy &&
       !this.typing &&
       this.errorMessages.length === 0 &&
@@ -153,19 +164,19 @@ export default class AddressInput extends Mixins(BlockieMixin) {
       ? of(value)
       : of(value).pipe(
           tap(() => (this.busy = true)),
-          switchMap(value =>
+          switchMap((value) =>
             value.value in this.presences
               ? of(this.presences[value.value])
               : defer(() => from(this.$raiden.getAvailability(value.value)))
           ),
-          map(available => {
+          map((available) => {
             this.busy = false;
             this.isAddressAvailable = available;
             if (!available) {
               return {
                 ...value,
                 error: this.$t('address-input.error.target-offline') as string,
-                isAddress: true
+                isAddress: true,
               };
             }
             return value;
@@ -177,12 +188,12 @@ export default class AddressInput extends Mixins(BlockieMixin) {
     return !AddressUtils.isDomain(value)
       ? of({
           error: this.$t('address-input.error.invalid-address') as string,
-          value
+          value,
         })
       : of(value).pipe(
           tap(() => (this.busy = true)),
-          switchMap(value => this.$raiden.ensResolve(value)),
-          map(resolvedAddress => {
+          switchMap((value) => this.$raiden.ensResolve(value)),
+          map((resolvedAddress) => {
             if (
               !resolvedAddress ||
               !AddressUtils.checkAddressChecksum(resolvedAddress)
@@ -191,7 +202,7 @@ export default class AddressInput extends Mixins(BlockieMixin) {
                 error: this.$t(
                   'address-input.error.ens-resolve-failed'
                 ) as string,
-                value: resolvedAddress
+                value: resolvedAddress,
               };
             }
             return { value: resolvedAddress, originalValue: value };
@@ -201,7 +212,7 @@ export default class AddressInput extends Mixins(BlockieMixin) {
               error: this.$t(
                 'address-input.error.ens-resolve-failed'
               ) as string,
-              value
+              value,
             })
           ),
           tap(() => (this.busy = false))
@@ -237,29 +248,29 @@ export default class AddressInput extends Mixins(BlockieMixin) {
           this.typing = true;
         }),
         debounceTime(600),
-        switchMap(value => {
+        switchMap((value) => {
           if (!value) {
             if (this.touched) {
               return of<ValidationResult>({
-                error: this.$t('address-input.error.empty') as string,
-                value: ''
+                error: '',
+                value: '',
               });
             }
 
             return of<ValidationResult>({
               error: '',
-              value: ''
+              value: '',
             });
           }
 
           this.touched = true;
-          const [addresses, nonAddresses] = partition(of(value), value =>
+          const [addresses, nonAddresses] = partition(of(value), (value) =>
             AddressUtils.isAddress(value)
           );
           return merge<ValidationResult>(
-            addresses.pipe(switchMap(value => this.validateAddress(value))),
-            nonAddresses.pipe(switchMap(value => this.lookupEnsDomain(value)))
-          ).pipe(switchMap(value => this.checkAvailability(value)));
+            addresses.pipe(switchMap((value) => this.validateAddress(value))),
+            nonAddresses.pipe(switchMap((value) => this.lookupEnsDomain(value)))
+          ).pipe(switchMap((value) => this.checkAvailability(value)));
         })
       )
       .subscribe(({ error, value }) => {
@@ -351,9 +362,9 @@ export default class AddressInput extends Mixins(BlockieMixin) {
 </script>
 
 <style lang="scss" scoped>
-@import '../scss/mixins';
-@import '../scss/colors';
-@import '../scss/fonts';
+@import '@/scss/mixins';
+@import '@/scss/colors';
+@import '@/scss/fonts';
 
 .address-input {
   display: flex;
@@ -422,10 +433,6 @@ export default class AddressInput extends Mixins(BlockieMixin) {
             border: 1.5px solid $primary-color;
           }
         }
-      }
-
-      &__prepend-inner {
-        margin-top: 0;
       }
     }
 

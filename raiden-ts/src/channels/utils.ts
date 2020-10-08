@@ -1,14 +1,36 @@
-import { OperatorFunction, from, Observable, ReplaySubject } from 'rxjs';
-import { tap, mergeMap, map, pluck, filter, groupBy, takeUntil } from 'rxjs/operators';
+import {
+  OperatorFunction,
+  Observable,
+  ReplaySubject,
+  throwError,
+  timer,
+  MonoTypeOperatorFunction,
+  of,
+  defer,
+} from 'rxjs';
+import {
+  tap,
+  mergeMap,
+  map,
+  pluck,
+  filter,
+  groupBy,
+  takeUntil,
+  retryWhen,
+  mapTo,
+} from 'rxjs/operators';
 import { Zero } from 'ethers/constants';
-import { ContractTransaction } from 'ethers/contract';
+import { ContractTransaction, ContractReceipt } from 'ethers/contract';
+import logging, { Logger } from 'loglevel';
 
+import { HumanStandardToken } from '../contracts/HumanStandardToken';
 import { RaidenState } from '../state';
 import { RaidenEpicDeps } from '../types';
-import { UInt, Hash, Address } from '../utils/types';
-import { ErrorCodes, RaidenError } from '../utils/error';
+import { UInt, Address, Hash, Int, bnMax } from '../utils/types';
+import { RaidenError, assert, ErrorCodes } from '../utils/error';
 import { distinctRecordValues } from '../utils/rx';
-import { Channel, ChannelState } from './state';
+import { MessageType } from '../messages/types';
+import { Channel, ChannelBalances } from './state';
 import { ChannelKey, ChannelUniqueKey } from './types';
 
 /**
@@ -22,9 +44,9 @@ import { ChannelKey, ChannelUniqueKey } from './types';
 export function channelKey<
   C extends { tokenNetwork: Address } & ({ partner: { address: Address } } | { partner: Address })
 >({ tokenNetwork, partner }: C): ChannelKey {
-  return `${
-    typeof partner === 'string' ? partner : (partner as { address: Address }).address
-  }@${tokenNetwork}`;
+  const partnerAddr =
+    typeof partner === 'string' ? partner : (partner as { address: Address }).address;
+  return `${tokenNetwork}@${partnerAddr}`;
 }
 
 /**
@@ -34,12 +56,13 @@ export function channelKey<
  * @returns A string, for now
  */
 export function channelUniqueKey<
-  C extends { id: number; tokenNetwork: Address } & (
+  C extends { _id?: string; id: number; tokenNetwork: Address } & (
     | { partner: { address: Address } }
     | { partner: Address }
   )
 >(channel: C): ChannelUniqueKey {
-  return `${channel.id}#${channelKey(channel)}`;
+  if ('_id' in channel && channel._id) return channel._id;
+  return `${channelKey(channel)}#${channel.id.toString().padStart(9, '0')}`;
 }
 
 /**
@@ -49,41 +72,11 @@ export function channelUniqueKey<
  * @returns An object holding own&partner's deposit, withdraw, transferred, locked, balance and
  *          capacity.
  */
-export function channelAmounts(channel: Channel) {
-  const Zero32 = Zero as UInt<32>;
-  if (channel.state !== ChannelState.open)
-    return {
-      ownDeposit: Zero32,
-      ownWithdraw: Zero32,
-      ownTransferred: Zero32,
-      ownLocked: Zero32,
-      ownBalance: Zero32,
-      ownCapacity: Zero32,
-      ownOnchainUnlocked: Zero32,
-      ownUnlocked: Zero32, // total of off & onchain unlocked
-      partnerDeposit: Zero32,
-      partnerWithdraw: Zero32,
-      partnerTransferred: Zero32,
-      partnerLocked: Zero32,
-      partnerBalance: Zero32,
-      partnerCapacity: Zero32,
-      partnerOnchainUnlocked: Zero32,
-      partnerUnlocked: Zero32, // total of off & onchain unlocked
-    };
-
+export function channelAmounts(channel: Channel): ChannelBalances {
   const ownWithdraw = channel.own.withdraw,
     partnerWithdraw = channel.partner.withdraw,
     ownTransferred = channel.own.balanceProof.transferredAmount,
     partnerTransferred = channel.partner.balanceProof.transferredAmount,
-    ownLocked = channel.own.balanceProof.lockedAmount,
-    partnerLocked = channel.partner.balanceProof.lockedAmount,
-    ownBalance = partnerTransferred.sub(ownTransferred) as UInt<32>,
-    partnerBalance = ownTransferred.sub(partnerTransferred) as UInt<32>, // == -ownBalance
-    ownCapacity = channel.own.deposit.sub(ownWithdraw).sub(ownLocked).add(ownBalance) as UInt<32>,
-    partnerCapacity = channel.partner.deposit
-      .sub(partnerWithdraw)
-      .sub(partnerLocked)
-      .add(partnerBalance) as UInt<32>,
     ownOnchainUnlocked = channel.own.locks
       .filter((lock) => lock.registered)
       .reduce((acc, lock) => acc.add(lock.amount), Zero) as UInt<32>,
@@ -91,7 +84,40 @@ export function channelAmounts(channel: Channel) {
       .filter((lock) => lock.registered)
       .reduce((acc, lock) => acc.add(lock.amount), Zero) as UInt<32>,
     ownUnlocked = ownTransferred.add(ownOnchainUnlocked) as UInt<32>,
-    partnerUnlocked = partnerTransferred.add(partnerOnchainUnlocked) as UInt<32>;
+    partnerUnlocked = partnerTransferred.add(partnerOnchainUnlocked) as UInt<32>,
+    ownLocked = channel.own.balanceProof.lockedAmount.sub(ownOnchainUnlocked) as UInt<32>,
+    partnerLocked = channel.partner.balanceProof.lockedAmount.sub(partnerOnchainUnlocked) as UInt<
+      32
+    >,
+    ownBalance = partnerUnlocked.sub(ownUnlocked) as Int<32>,
+    partnerBalance = ownUnlocked.sub(partnerUnlocked) as Int<32>, // == -ownBalance
+    _ownPendingWithdraw = bnMax(
+      // get maximum between actual and pending withdraws (as it's a total)
+      ownWithdraw,
+      ...channel.own.pendingWithdraws
+        .filter((req) => req.type === MessageType.WITHDRAW_REQUEST)
+        .map((req) => req.total_withdraw),
+    ),
+    _partnerPendingWithdraw = bnMax(
+      partnerWithdraw,
+      ...channel.partner.pendingWithdraws
+        .filter((req) => req.type === MessageType.WITHDRAW_REQUEST)
+        .map((req) => req.total_withdraw),
+    ),
+    ownCapacity = channel.own.deposit
+      .sub(_ownPendingWithdraw) // pending withdraws reduce capacity
+      .sub(ownLocked)
+      .add(ownBalance) as UInt<32>,
+    partnerCapacity = channel.partner.deposit
+      .sub(_partnerPendingWithdraw)
+      .sub(partnerLocked)
+      .add(partnerBalance) as UInt<32>,
+    ownTotalWithdrawable = channel.own.deposit.add(ownBalance).sub(ownLocked) as UInt<32>,
+    ownWithdrawable = ownTotalWithdrawable.sub(ownWithdraw) as UInt<32>,
+    partnerTotalWithdrawable = channel.partner.deposit
+      .add(partnerBalance)
+      .sub(partnerLocked) as UInt<32>,
+    partnerWithdrawable = partnerTotalWithdrawable.sub(partnerWithdraw) as UInt<32>;
 
   return {
     ownDeposit: channel.own.deposit,
@@ -110,6 +136,10 @@ export function channelAmounts(channel: Channel) {
     partnerCapacity,
     partnerOnchainUnlocked,
     partnerUnlocked,
+    ownTotalWithdrawable,
+    ownWithdrawable,
+    partnerTotalWithdrawable,
+    partnerWithdrawable,
   };
 }
 
@@ -124,24 +154,74 @@ export function channelAmounts(channel: Channel) {
  */
 export function assertTx(
   method: string,
-  error: ErrorCodes,
+  error: string,
   { log }: Pick<RaidenEpicDeps, 'log'>,
-): OperatorFunction<ContractTransaction, Hash> {
-  /**
-   * Operator to check for tx
-   *
-   * @param tx - pending contract tx
-   * @returns Observable of txHash
-   */
-  return (tx) =>
-    tx.pipe(
+): OperatorFunction<
+  ContractTransaction,
+  [ContractTransaction, ContractReceipt & { transactionHash: Hash; blockNumber: number }]
+> {
+  return (tx$) =>
+    tx$.pipe(
       tap((tx) => log.debug(`sent ${method} tx "${tx.hash}" to "${tx.to}"`)),
-      mergeMap((tx) =>
-        from(tx.wait()).pipe(
-          map((receipt) => {
-            if (!receipt.status) throw new RaidenError(error, { transactionHash: tx.hash! });
-            log.debug(`${method} tx "${tx.hash}" successfuly mined!`);
-            return tx.hash as Hash;
+      mergeMap(async (tx) => [tx, await tx.wait()] as const),
+      map(([tx, receipt]) => {
+        if (!receipt.status || !receipt.transactionHash || !receipt.blockNumber)
+          throw new RaidenError(error, {
+            status: receipt.status ?? null,
+            transactionHash: receipt.transactionHash ?? null,
+            blockNumber: receipt.blockNumber ?? null,
+          });
+        log.debug(`${method} tx "${receipt.transactionHash}" successfuly mined!`);
+        return [tx, receipt] as [
+          ContractTransaction,
+          ContractReceipt & { transactionHash: Hash; blockNumber: number },
+        ];
+      }),
+    );
+}
+
+export const txNonceErrors: readonly string[] = [
+  'replacement fee too low',
+  'gas price supplied is too low',
+  'nonce is too low',
+  'nonce has already been used',
+  'already known',
+  'Transaction with the same hash was already imported',
+];
+export const txFailErrors: readonly string[] = [
+  'always failing transaction',
+  'execution failed due to an exception',
+  'transaction failed',
+];
+
+/**
+ * RxJS pipeable operator to re-subscribe/retry a transaction observable on recoverable errors
+ *
+ * For this to work, the input$ transaction observable must be re-subscribable:
+ * e.g. a promise wrapped in a `defer` callback.
+ *
+ * @param interval - interval between retries
+ * @param count - Maximum number of retries
+ * @param errors - Retry if error.message includes some string in this array (recoverable errors)
+ * @param options - Options object
+ * @param options.log - Logger instance
+ * @returns Monotype operator to re-subscribe to input observable
+ */
+export function retryTx<T>(
+  interval = 1000,
+  count = 10,
+  errors: readonly string[] = txNonceErrors,
+  { log }: { log: logging.Logger } = { log: logging },
+): MonoTypeOperatorFunction<T> {
+  return (input$) =>
+    input$.pipe(
+      retryWhen((err$) =>
+        err$.pipe(
+          mergeMap((err, i) => {
+            log.debug(`__retryTx ${i + 1}/${count} every ${interval}, error: `, err);
+            if (i < count && errors.some((error) => err.message?.includes?.(error)))
+              return timer(interval);
+            return throwError(err);
           }),
         ),
       ),
@@ -165,7 +245,7 @@ export function groupChannel$(state$: Observable<RaidenState>) {
     // immediately if resubscribed or withLatestFrom'd
     groupBy(channelUniqueKey, undefined, undefined, () => new ReplaySubject<Channel>(1)),
     map((grouped$) => {
-      const [_id, key] = grouped$.key.split('#');
+      const [key, _id] = grouped$.key.split('#');
       const id = +_id;
       return grouped$.pipe(
         takeUntil(
@@ -179,3 +259,56 @@ export function groupChannel$(state$: Observable<RaidenState>) {
     }),
   );
 }
+
+/* eslint-disable jsdoc/valid-types */
+/**
+ * Approves spender to transfer up to 'deposit' from our tokens; skips if already allowed
+ *
+ * @param amounts - Tuple of amounts
+ * @param amounts.0 - Our current token balance
+ * @param amounts.1 - Spender's current allowance
+ * @param amounts.2 - The new desired allowance for spender
+ * @param tokenContract - Token contract instance
+ * @param spender - Spender address
+ * @param approveError - ErrorCode of approve transaction errors
+ * @param opts - Options object
+ * @param opts.log - Logger instance for asserTx
+ * @param opts.minimumAllowance - Minimum allowance to approve
+ * @returns Cold observable to perform approve transactions
+ */
+export function approveIfNeeded$(
+  [balance, allowance, deposit]: [UInt<32>, UInt<32>, UInt<32>],
+  tokenContract: HumanStandardToken,
+  spender: Address,
+  approveError: string = ErrorCodes.RDN_APPROVE_TRANSACTION_FAILED,
+  { log, minimumAllowance }: { log: Logger; minimumAllowance: UInt<32> } = {
+    log: logging,
+    minimumAllowance: Zero as UInt<32>,
+  },
+): Observable<true | ContractReceipt> {
+  assert(balance.gte(deposit), [
+    ErrorCodes.RDN_INSUFFICIENT_BALANCE,
+    { current: balance.toString(), required: deposit.toString() },
+  ]);
+
+  if (allowance.gte(deposit)) return of(true); // if allowance already enough
+
+  // secure ERC20 tokens require changing allowance only from or to Zero
+  // see https://github.com/raiden-network/light-client/issues/2010
+  let resetAllowance$: Observable<true> = of(true);
+  if (!allowance.isZero())
+    resetAllowance$ = defer(() => tokenContract.functions.approve(spender, 0)).pipe(
+      assertTx('approve', approveError, { log }),
+      mapTo(true),
+    );
+
+  // if needed, send approveTx and wait/assert it before proceeding; 'deposit' could be enough,
+  // but we send 'prevAllowance + deposit' in case there's a pending deposit
+  // default minimumAllowance=MaxUint256 allows to approve once and for all
+  return resetAllowance$.pipe(
+    mergeMap(() => tokenContract.functions.approve(spender, bnMax(minimumAllowance, deposit))),
+    assertTx('approve', approveError, { log }),
+    pluck(1),
+  );
+}
+/* eslint-enable jsdoc/valid-types */

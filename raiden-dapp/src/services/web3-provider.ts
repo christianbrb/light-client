@@ -1,25 +1,24 @@
 export class Web3Provider {
-  static async provider(config?: { INFURA_ENDPOINT: string }) {
-    const ethereum = window.ethereum;
+  static async provider(rpcEndpoint?: string) {
     let provider = null;
 
-    if (config) {
-      if (!config.INFURA_ENDPOINT.startsWith('http')) {
-        provider = `https://${config.INFURA_ENDPOINT}`;
+    if (rpcEndpoint) {
+      if (!rpcEndpoint.startsWith('http')) {
+        provider = `https://${rpcEndpoint}`;
       } else {
-        provider = config.INFURA_ENDPOINT;
+        provider = rpcEndpoint;
       }
-    } else if (typeof ethereum !== 'undefined') {
-      await ethereum.enable();
-      provider = ethereum;
+    } else if (typeof window.ethereum !== 'undefined') {
+      window.ethereum.autoRefreshOnNetworkChange = false;
+      await window.ethereum.request({ method: 'eth_requestAccounts' });
+      provider = window.ethereum;
     } else if (window.web3) {
       provider = window.web3.currentProvider;
     }
 
     /* istanbul ignore next */
     if (provider && provider.isMetaMask) {
-      provider.autoRefreshOnNetworkChange = false;
-      provider.on('networkChanged', () =>
+      provider.on('chainChanged', () =>
         window.location.replace(window.location.origin)
       );
     }

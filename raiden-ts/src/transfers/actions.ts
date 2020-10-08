@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 import * as t from 'io-ts';
-import invert from 'lodash/invert';
 
 import { Address, UInt, Int, Secret, Hash, Signed } from '../utils/types';
 import { createAction, ActionType, createAsyncAction } from '../utils/actions';
@@ -12,16 +11,16 @@ import {
   SecretReveal,
   Unlock,
   LockExpired,
-  RefundTransfer,
   WithdrawRequest,
   WithdrawConfirmation,
+  WithdrawExpired,
 } from '../messages/types';
 import { Paths } from '../services/types';
-import { Direction } from './state';
+import { DirectionC, TransferState } from './state';
 
 const TransferId = t.type({
   secrethash: Hash,
-  direction: t.keyof(invert(Direction) as Record<Direction, string>),
+  direction: DirectionC,
 });
 
 /**
@@ -72,7 +71,7 @@ export namespace transfer {
 /** A LockedTransfer was signed and should be sent to partner */
 export const transferSigned = createAction(
   'transfer/signed',
-  t.type({ message: Signed(LockedTransfer), fee: Int(32) }),
+  t.type({ message: Signed(LockedTransfer), fee: Int(32), partner: Address }),
   TransferId,
 );
 export interface transferSigned extends ActionType<typeof transferSigned> {}
@@ -136,7 +135,7 @@ export const transferUnlock = createAsyncAction(
   'transfer/unlock/success',
   'transfer/unlock/failure',
   undefined,
-  t.type({ message: Signed(Unlock) }),
+  t.type({ message: Signed(Unlock), partner: Address }),
 );
 
 export namespace transferUnlock {
@@ -157,8 +156,8 @@ export interface transferUnlockProcessed extends ActionType<typeof transferUnloc
  * A request to expire a given transfer
  *
  * A transfer expiration request may fail for any reason
- * e.g. user rejected sign promopt. It should eventually get prompted again, on a future newBlock
- * action which sees this transfer should be expired but sent.lockExpired didn't get set yet.
+ * e.g. user rejected sign prompt. It should eventually get prompted again, on a future newBlock
+ * action which sees this transfer should be expired but sent.expired didn't get set yet.
  */
 export const transferExpire = createAsyncAction(
   TransferId,
@@ -166,7 +165,7 @@ export const transferExpire = createAsyncAction(
   'transfer/expire/success',
   'transfer/expire/failure',
   undefined,
-  t.type({ message: Signed(LockExpired) }),
+  t.type({ message: Signed(LockExpired), partner: Address }),
 );
 
 export namespace transferExpire {
@@ -183,39 +182,82 @@ export const transferExpireProcessed = createAction(
 );
 export interface transferExpireProcessed extends ActionType<typeof transferExpireProcessed> {}
 
-/** A transfer was refunded */
-export const transferRefunded = createAction(
-  'transfer/refunded',
-  t.type({ message: Signed(RefundTransfer) }),
-  TransferId,
-);
-export interface transferRefunded extends ActionType<typeof transferRefunded> {}
-
-/** A pending transfer isn't needed anymore and should be cleared from state */
-export const transferClear = createAction('transfer/clear', undefined, TransferId);
+export const transferClear = createAction('transfer/clear', t.undefined, TransferId);
 export interface transferClear extends ActionType<typeof transferClear> {}
+
+export const transferLoad = createAction('transfer/load', TransferState, TransferId);
+export interface transferLoad extends ActionType<typeof transferLoad> {}
 
 // Withdraw actions
 
 const WithdrawId = t.type({
+  direction: DirectionC,
   tokenNetwork: Address,
   partner: Address,
   totalWithdraw: UInt(32),
   expiration: t.number,
 });
 
-/** A WithdrawRequest was received from partner */
-export const withdrawReceive = createAsyncAction(
+/**
+ * Start a withdraw
+ * - request: request to start a withdraw
+ * - success: withdraw finished on-chain
+ * - failure: something went wrong generating or processing a request
+ */
+export const withdraw = createAsyncAction(
   WithdrawId,
-  'withdraw/receive/request',
-  'withdraw/receive/success',
-  'withdraw/receive/failure',
+  'withdraw/request',
+  'withdraw/success',
+  'withdraw/failure',
+  t.undefined,
+  t.type({ txHash: Hash, txBlock: t.number, confirmed: t.union([t.undefined, t.boolean]) }),
+);
+export namespace withdraw {
+  export interface request extends ActionType<typeof withdraw.request> {}
+  export interface success extends ActionType<typeof withdraw.success> {}
+  export interface failure extends ActionType<typeof withdraw.failure> {}
+}
+
+/**
+ * Withdraw messages going through:
+ * - request: WithdrawRequest sent or received
+ * - success: WithdrawConfirmation sent or received
+ * - failure: something went wrong processing WithdrawRequest or WithdrawConfirmation messages
+ */
+export const withdrawMessage = createAsyncAction(
+  WithdrawId,
+  'withdraw/message/request',
+  'withdraw/message/success',
+  'withdraw/message/failure',
   t.type({ message: Signed(WithdrawRequest) }),
   t.type({ message: Signed(WithdrawConfirmation) }),
 );
-
-export namespace withdrawReceive {
-  export interface request extends ActionType<typeof withdrawReceive.request> {}
-  export interface success extends ActionType<typeof withdrawReceive.success> {}
-  export interface failure extends ActionType<typeof withdrawReceive.failure> {}
+export namespace withdrawMessage {
+  export interface request extends ActionType<typeof withdrawMessage.request> {}
+  export interface success extends ActionType<typeof withdrawMessage.success> {}
+  export interface failure extends ActionType<typeof withdrawMessage.failure> {}
 }
+
+/**
+ * Expires a withdraw
+ * - request: request to expire a past request
+ * - success: WithdrawExpired sent or received
+ * - failure: something went wrong generating or processing a request
+ */
+export const withdrawExpire = createAsyncAction(
+  WithdrawId,
+  'withdraw/expire/request',
+  'withdraw/expire/success',
+  'withdraw/expire/failure',
+  t.undefined,
+  t.type({ message: Signed(WithdrawExpired) }),
+  // ,
+);
+export namespace withdrawExpire {
+  export interface request extends ActionType<typeof withdrawExpire.request> {}
+  export interface success extends ActionType<typeof withdrawExpire.success> {}
+  export interface failure extends ActionType<typeof withdrawExpire.failure> {}
+}
+
+export const withdrawCompleted = createAction('withdraw/completed', t.undefined, WithdrawId);
+export interface withdrawCompleted extends ActionType<typeof withdrawCompleted> {}

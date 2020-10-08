@@ -2,7 +2,7 @@
 import * as t from 'io-ts';
 
 import { createAction, ActionType, createAsyncAction } from '../utils/actions';
-import { Address, UInt, Signed } from '../utils/types';
+import { Address, UInt, Signed, Hash } from '../utils/types';
 import { Paths, PFS, IOU } from './types';
 
 const PathId = t.type({
@@ -24,7 +24,6 @@ export const pathFind = createAsyncAction(
   t.partial({ paths: Paths, pfs: t.union([PFS, t.null]) }),
   t.type({ paths: Paths }),
 );
-
 export namespace pathFind {
   export interface request extends ActionType<typeof pathFind.request> {}
   export interface success extends ActionType<typeof pathFind.success> {}
@@ -43,5 +42,70 @@ export interface iouPersist extends ActionType<typeof iouPersist> {}
 export const iouClear = createAction('iou/clear', undefined, ServiceId);
 export interface iouClear extends ActionType<typeof iouClear> {}
 
-export const udcDeposited = createAction('udc/deposited', UInt(32));
-export interface udcDeposited extends ActionType<typeof udcDeposited> {}
+export const udcDeposit = createAsyncAction(
+  t.type({ totalDeposit: UInt(32) }),
+  'udc/deposit/request',
+  'udc/deposit/success',
+  'udc/deposit/failure',
+  t.intersection([t.type({ deposit: UInt(32) }), t.partial({ subkey: t.boolean })]),
+  t.union([
+    t.undefined,
+    t.type({ txHash: Hash, txBlock: t.number, confirmed: t.union([t.undefined, t.boolean]) }),
+  ]),
+);
+export namespace udcDeposit {
+  export interface request extends ActionType<typeof udcDeposit.request> {}
+  export interface success extends ActionType<typeof udcDeposit.success> {}
+  export interface failure extends ActionType<typeof udcDeposit.failure> {}
+}
+
+const UdcWithdrawId = t.type({
+  amount: UInt(32),
+});
+
+export const udcWithdraw = createAsyncAction(
+  UdcWithdrawId,
+  'udc/withdraw/request',
+  'udc/withdraw/success',
+  'udc/withdraw/failure',
+  t.undefined,
+  t.intersection([
+    t.type({ block: t.number }),
+    t.partial({ txHash: Hash, txBlock: t.number, confirmed: t.union([t.undefined, t.boolean]) }),
+  ]),
+);
+
+export namespace udcWithdraw {
+  export interface request extends ActionType<typeof udcWithdraw.request> {}
+  export interface success extends ActionType<typeof udcWithdraw.success> {}
+  export interface failure extends ActionType<typeof udcWithdraw.failure> {}
+}
+
+export const udcWithdrawn = createAction(
+  'udc/withdrawn',
+  t.type({
+    withdrawal: UInt(32),
+    txHash: Hash,
+    txBlock: t.number,
+    confirmed: t.union([t.undefined, t.boolean]),
+  }),
+  UdcWithdrawId,
+);
+
+export interface udcWithdrawn extends ActionType<typeof udcWithdrawn> {}
+
+export const msBalanceProofSent = createAction(
+  'ms/balanceProof/sent',
+  t.type({
+    tokenNetwork: Address,
+    partner: Address,
+    id: t.number,
+    reward: UInt(32),
+    nonce: UInt(8),
+    monitoringService: Address,
+    txHash: Hash,
+    txBlock: t.number,
+    confirmed: t.union([t.undefined, t.boolean]),
+  }),
+);
+export interface msBalanceProofSent extends ActionType<typeof msBalanceProofSent> {}

@@ -22,8 +22,9 @@ import isEqual from 'lodash/isEqual';
 import { getAddress, verifyMessage } from 'ethers/utils';
 import { MatrixClient, MatrixEvent } from 'matrix-js-sdk';
 
+import { assert } from '../../utils';
 import { RaidenError, ErrorCodes } from '../../utils/error';
-import { Address, isntNil, assert } from '../../utils/types';
+import { Address, isntNil } from '../../utils/types';
 import { isActionOf } from '../../utils/actions';
 import { RaidenEpicDeps } from '../../types';
 import { RaidenAction } from '../../actions';
@@ -31,7 +32,7 @@ import { RaidenState } from '../../state';
 import { getUserPresence } from '../../utils/matrix';
 import { pluckDistinct } from '../../utils/rx';
 import { matrixPresence } from '../actions';
-import { channelMonitor } from '../../channels/actions';
+import { channelMonitored } from '../../channels/actions';
 import { parseCaps, stringifyCaps } from '../utils';
 
 // unavailable just means the user didn't do anything over a certain amount of time, but they're
@@ -255,7 +256,7 @@ export const matrixMonitorChannelPresenceEpic = (
   action$: Observable<RaidenAction>,
 ): Observable<matrixPresence.request> =>
   action$.pipe(
-    filter(channelMonitor.is),
+    filter(channelMonitored.is),
     map((action) => matrixPresence.request(undefined, { address: action.meta.partner })),
   );
 

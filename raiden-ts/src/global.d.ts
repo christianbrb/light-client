@@ -12,3 +12,7 @@ declare module 'matrix-js-sdk/lib/webrtc/call';
 
 declare module 'abort-controller/polyfill';
 declare module 'wrtc'; // types provided by @types/webrtc
+
+declare module 'pouchdb-adapter-indexeddb';
+
+declare type Mutable<T> = { -readonly [P in keyof T]: T[P] };

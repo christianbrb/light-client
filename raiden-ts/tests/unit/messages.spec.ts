@@ -1,13 +1,12 @@
 import { Wallet } from 'ethers';
 import { bigNumberify } from 'ethers/utils';
-import { HashZero, One, Zero } from 'ethers/constants';
+import { One, Zero } from 'ethers/constants';
 import {
   Delivered,
   LockedTransfer,
   LockExpired,
   MessageType,
   Processed,
-  RefundTransfer,
   SecretReveal,
   SecretRequest,
   Unlock,
@@ -93,60 +92,6 @@ describe('sign/verify, pack & encode/decode ', () => {
     expect(decoded).toEqual(signed);
   });
 
-  test('RefundTransfer', async () => {
-    const message: RefundTransfer = {
-      type: MessageType.REFUND_TRANSFER,
-      chain_id: bigNumberify(337) as UInt<32>,
-      message_identifier: bigNumberify(123457) as UInt<8>,
-      payment_identifier: One as UInt<8>,
-      nonce: One as UInt<8>,
-      token_network_address: '0xe82ae5475589b828D3644e1B56546F93cD27d1a4' as Address,
-      token: '0xc778417E063141139Fce010982780140Aa0cD5Ab' as Address,
-      channel_identifier: bigNumberify(1338) as UInt<32>,
-      transferred_amount: Zero as UInt<32>,
-      locked_amount: bigNumberify(10) as UInt<32>,
-      recipient: '0x540B51eDc5900B8012091cc7c83caf2cb243aa86' as Address,
-      locksroot: HashZero as Hash,
-      lock: {
-        amount: bigNumberify(10) as UInt<32>,
-        expiration: One as UInt<32>,
-        secrethash: '0x59cad5948673622c1d64e2322488bf01619f7ff45789741b15a9f782ce9290a8' as Hash,
-      },
-      target: '0x540B51eDc5900B8012091cc7c83caf2cb243aa86' as Address,
-      initiator: '0x2A915FDA69746F515b46C520eD511401d5CCD5e2' as Address,
-      metadata: {
-        routes: [
-          {
-            route: ['0x540B51eDc5900B8012091cc7c83caf2cb243aa86' as Address],
-          },
-        ],
-      },
-    };
-
-    expect(createMessageHash(message)).toEqual(
-      '0x8f6c25d8592b493d55a37b116b919b87172e444287d09081f7c7661762ea1074',
-    );
-
-    expect(packMessage(message)).toEqual(
-      '0xe82ae5475589b828d3644e1b56546f93cd27d1a400000000000000000000000000000000000000000000000000000000000001510000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000053ad11d651b5158961173ce2ce735c1d2ca57e8d784b9e3ad3451a446a09653fac200000000000000000000000000000000000000000000000000000000000000018f6c25d8592b493d55a37b116b919b87172e444287d09081f7c7661762ea1074',
-    );
-
-    const signed = await signMessage(signer, message);
-    expect(Signed(RefundTransfer).is(signed)).toBe(true);
-    expect(signed.signature).toBe(
-      '0x8ed40b851cf583eee2c454ce8d6366a79cd6900293de3e055074521f5f99090f6ea64db3110914911ac4f7412e37b1277616006dde6932d011def114b942e40b1b',
-    );
-    expect(getMessageSigner(signed)).toBe(address);
-
-    const encoded = encodeJsonMessage(signed);
-    expect(encoded).toBe(
-      '{"type":"RefundTransfer","chain_id":"337","message_identifier":"123457","payment_identifier":"1","nonce":"1","token_network_address":"0xe82ae5475589b828D3644e1B56546F93cD27d1a4","token":"0xc778417E063141139Fce010982780140Aa0cD5Ab","channel_identifier":"1338","transferred_amount":"0","locked_amount":"10","recipient":"0x540B51eDc5900B8012091cc7c83caf2cb243aa86","locksroot":"0x0000000000000000000000000000000000000000000000000000000000000000","lock":{"amount":"10","expiration":"1","secrethash":"0x59cad5948673622c1d64e2322488bf01619f7ff45789741b15a9f782ce9290a8"},"target":"0x540B51eDc5900B8012091cc7c83caf2cb243aa86","initiator":"0x2A915FDA69746F515b46C520eD511401d5CCD5e2","metadata":{"routes":[{"route":["0x540B51eDc5900B8012091cc7c83caf2cb243aa86"]}]},"signature":"0x8ed40b851cf583eee2c454ce8d6366a79cd6900293de3e055074521f5f99090f6ea64db3110914911ac4f7412e37b1277616006dde6932d011def114b942e40b1b"}',
-    );
-
-    const decoded = decodeJsonMessage(encoded);
-    expect(decoded).toEqual(signed);
-  });
-
   test('Unlock', async () => {
     const message: Unlock = {
       type: MessageType.UNLOCK,
@@ -223,6 +168,32 @@ describe('sign/verify, pack & encode/decode ', () => {
 
     const decoded = decodeJsonMessage(encoded);
     expect(decoded).toEqual(signed);
+  });
+
+  test('LockExpired 2', () => {
+    const message = `{
+      "chain_id": "1",
+      "message_identifier": "12568622946510763377",
+      "signature": "0x47bf00f00cb12b54f77686604b314321f2537816818bab28604109653ab37e490071c136359bf92fd873a4e9a5185ca7016a690f5791e9af83181cd98db25c381c",
+      "locksroot": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+      "secrethash": "0x8bcfdc09e3fee24b8e8cd006d3db0c9f5f307aa0deb23d10d7ba5f334281308c",
+      "nonce": "2",
+      "transferred_amount": "0",
+      "locked_amount": "0",
+      "token_network_address": "0x5b606943b36f3569e00ec4178a9f83eea8730184",
+      "channel_identifier": "17",
+      "recipient": "0x14efa2b271969a46a094a23e0d49e32c1b617f89",
+      "type": "LockExpired"
+    }`;
+    const decoded = decodeJsonMessage(message) as Signed<LockExpired>;
+    expect(Signed(LockExpired).is(decoded)).toBe(true);
+    expect(createMessageHash(decoded)).toEqual(
+      '0xcce8018c2c0dd11a312ef2bb1c8fe660fe09a8a4ba37ab5824239ff459eecb5c',
+    );
+    expect(packMessage(decoded)).toEqual(
+      '0x5b606943b36f3569e00ec4178a9f83eea873018400000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000001100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002cce8018c2c0dd11a312ef2bb1c8fe660fe09a8a4ba37ab5824239ff459eecb5c',
+    );
+    expect(getMessageSigner(decoded)).toBe('0x1Fd883F06A01c537D08441065aA4b2Cf75c3CBF8');
   });
 
   test('SecretRequest', async () => {
@@ -556,11 +527,11 @@ describe('sign/verify, pack & encode/decode ', () => {
   });
 
   test('RequestMonitoring', async () => {
-    const balanceHash = createBalanceHash(
-      Zero as UInt<32>,
-      One as UInt<32>,
-      '0x607e890c54e5ba67cd483bedae3ba9da9bf2ef2fbf237b9fb39a723b2296077b' as Hash,
-    );
+    const balanceHash = createBalanceHash({
+      transferredAmount: Zero as UInt<32>,
+      lockedAmount: One as UInt<32>,
+      locksroot: '0x607e890c54e5ba67cd483bedae3ba9da9bf2ef2fbf237b9fb39a723b2296077b' as Hash,
+    });
     const message: MonitorRequest = {
       type: MessageType.MONITOR_REQUEST,
       balance_proof: {

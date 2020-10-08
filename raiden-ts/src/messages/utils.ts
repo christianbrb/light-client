@@ -6,8 +6,10 @@ import { encode as rlpEncode } from 'ethers/utils/rlp';
 import { HashZero } from 'ethers/constants';
 import logging from 'loglevel';
 
-import { Address, Hash, HexString, Signature, UInt, Signed, decode, assert } from '../utils/types';
-import { encode, losslessParse, losslessStringify } from '../utils/data';
+import { LocksrootZero } from '../constants';
+import { assert } from '../utils';
+import { Address, Hash, HexString, Signature, Signed, decode } from '../utils/types';
+import { encode, jsonParse, jsonStringify } from '../utils/data';
 import { BalanceProof } from '../channels/types';
 import { EnvelopeMessage, Message, MessageType, Metadata } from './types';
 import { messageReceived } from './actions';
@@ -18,7 +20,6 @@ const CMDIDs: { readonly [T in MessageType]: number } = {
   [MessageType.SECRET_REQUEST]: 3,
   [MessageType.SECRET_REVEAL]: 11,
   [MessageType.LOCKED_TRANSFER]: 7,
-  [MessageType.REFUND_TRANSFER]: 8,
   [MessageType.UNLOCK]: 4,
   [MessageType.LOCK_EXPIRED]: 13,
   [MessageType.WITHDRAW_REQUEST]: 15,
@@ -53,17 +54,20 @@ export function createMetadataHash(metadata: Metadata): Hash {
 /**
  * Returns a balance_hash from transferred&locked amounts & locksroot
  *
- * @param transferredAmount - EnvelopeMessage.transferred_amount
- * @param lockedAmount - EnvelopeMessage.locked_amount
- * @param locksroot - Hash of all current locks
+ * @param bp - BalanceProof-like object
+ * @param bp.transferredAmount - balanceProof's transferredAmount
+ * @param bp.lockedAmount - balanceProof's lockedAmount
+ * @param bp.locksroot - balanceProof's locksroot
  * @returns Hash of the balance
  */
-export function createBalanceHash(
-  transferredAmount: UInt<32>,
-  lockedAmount: UInt<32>,
-  locksroot: Hash,
-): Hash {
-  return (transferredAmount.isZero() && lockedAmount.isZero() && locksroot === HashZero
+export function createBalanceHash({
+  transferredAmount,
+  lockedAmount,
+  locksroot,
+}: Pick<BalanceProof, 'transferredAmount' | 'lockedAmount' | 'locksroot'>): Hash {
+  return (transferredAmount.isZero() &&
+  lockedAmount.isZero() &&
+  (locksroot === HashZero || locksroot === LocksrootZero)
     ? HashZero
     : keccak256(
         concat([encode(transferredAmount, 32), encode(lockedAmount, 32), encode(locksroot, 32)]),
@@ -79,7 +83,6 @@ export function createBalanceHash(
 export function createMessageHash(message: EnvelopeMessage): Hash {
   switch (message.type) {
     case MessageType.LOCKED_TRANSFER:
-    case MessageType.REFUND_TRANSFER:
       // hash of packed representation of the whole message
       let packed = concat([
         encode(CMDIDs[message.type], 1),
@@ -147,15 +150,14 @@ export function packMessage(message: Message) {
         ]),
       ) as HexString<12>;
     case MessageType.LOCKED_TRANSFER:
-    case MessageType.REFUND_TRANSFER:
     case MessageType.UNLOCK:
     case MessageType.LOCK_EXPIRED: {
       const additionalHash = createMessageHash(message),
-        balanceHash = createBalanceHash(
-          message.transferred_amount,
-          message.locked_amount,
-          message.locksroot,
-        );
+        balanceHash = createBalanceHash({
+          transferredAmount: message.transferred_amount,
+          lockedAmount: message.locked_amount,
+          locksroot: message.locksroot,
+        });
       return hexlify(
         concat([
           encode(message.token_network_address, 20),
@@ -308,25 +310,25 @@ export function getBalanceProofFromEnvelopeMessage(
 
 /**
  * Encode a Message as a JSON string
- * Uses lossless-json to encode BigNumbers as JSON 'string' type, as Raiden
+ * Uses io-ts codec to encode BigNumbers as JSON 'string' type, as Raiden
  *
  * @param message - Message object to be serialized
  * @returns JSON string
  */
 export function encodeJsonMessage(message: Message | Signed<Message>): string {
-  if ('signature' in message) return losslessStringify(Signed(Message).encode(message));
-  return losslessStringify(Message.encode(message));
+  if ('signature' in message) return jsonStringify(Signed(Message).encode(message));
+  return jsonStringify(Message.encode(message));
 }
 
 /**
- * Try to decode text as a Message, using lossless-json to decode BigNumbers
+ * Try to decode text as a Message, using io-ts codec to decode BigNumbers
  * Throws if can't decode, or message is invalid regarding any of the encoded constraints
  *
  * @param text - JSON string to try to decode
  * @returns Message object
  */
 export function decodeJsonMessage(text: string): Message | Signed<Message> {
-  const parsed = losslessParse(text);
+  const parsed = jsonParse(text);
   assert(
     parsed &&
       typeof parsed === 'object' &&

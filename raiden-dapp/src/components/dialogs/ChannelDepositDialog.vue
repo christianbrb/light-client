@@ -17,16 +17,8 @@
     </v-card-title>
 
     <v-card-actions>
-      <v-row v-if="loading" align="center" justify="center">
-        <v-col cols="6">
-          <v-progress-circular
-            class="channel-deposit__progress"
-            :size="110"
-            :width="7"
-            indeterminate
-          >
-          </v-progress-circular>
-        </v-col>
+      <v-row v-if="loading">
+        <spinner />
       </v-row>
       <v-row v-else-if="done" align="center" justify="center">
         <v-col cols="6">
@@ -77,14 +69,16 @@ import { Token } from '@/model/types';
 import AmountInput from '@/components/AmountInput.vue';
 import ActionButton from '@/components/ActionButton.vue';
 import RaidenDialog from '@/components/dialogs/RaidenDialog.vue';
+import Spinner from '@/components/icons/Spinner.vue';
 import { BalanceUtils } from '@/utils/balance-utils';
 
 @Component({
   components: {
     AmountInput,
     ActionButton,
-    RaidenDialog
-  }
+    RaidenDialog,
+    Spinner,
+  },
 })
 export default class ChannelDepositDialog extends Vue {
   @Prop({ required: true })
@@ -123,7 +117,7 @@ export default class ChannelDepositDialog extends Vue {
   depositTokens() {
     const deposit = BalanceUtils.parse(this.deposit, this.token.decimals!);
     if (!deposit.isZero()) {
-      this.$emit('depositTokens', deposit);
+      this.$emit('deposit-tokens', deposit);
     }
   }
 }
@@ -135,10 +129,6 @@ export default class ChannelDepositDialog extends Vue {
 .channel-deposit {
   &__button {
     margin-top: 45px;
-  }
-
-  &__progress {
-    color: $secondary-color;
   }
 
   &__done {

@@ -1,4 +1,5 @@
 jest.mock('@/services/raiden-service');
+jest.mock('@/i18n', () => jest.fn());
 
 import { One } from 'ethers/constants';
 import ChannelDepositDialog from '@/components/dialogs/ChannelDepositDialog.vue';
@@ -33,12 +34,12 @@ describe('ChannelDialogs.vue', () => {
       stubs: ['v-dialog'],
       propsData: {
         action: null,
-        channel: null
+        channel: null,
       },
       mocks: {
         $raiden,
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
     });
   }
 
@@ -47,47 +48,47 @@ describe('ChannelDialogs.vue', () => {
   });
 
   test('default state is empty', () => {
-    expect(wrapper.isEmpty()).toBeTruthy();
+    expect(wrapper.element.tagName).toBeUndefined();
   });
 
   test('close', async () => {
     wrapper.setProps({
       channel: TestData.openChannel,
-      action: 'close'
+      action: 'close',
     });
 
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(ConfirmationDialog).exists()).toBeTruthy();
+    expect(wrapper.findComponent(ConfirmationDialog).exists()).toBeTruthy();
   });
 
   test('settle', async () => {
     wrapper.setProps({
       channel: TestData.settlableChannel,
-      action: 'settle'
+      action: 'settle',
     });
 
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(ConfirmationDialog).exists()).toBeTruthy();
+    expect(wrapper.findComponent(ConfirmationDialog).exists()).toBeTruthy();
   });
 
   test('deposit', async () => {
     const tokenAddress = TestData.openChannel.token;
     store.commit('updateTokens', {
-      [tokenAddress]: { ...TestData.token, address: tokenAddress }
+      [tokenAddress]: { ...TestData.token, address: tokenAddress },
     } as Tokens);
     wrapper.setProps({
       channel: TestData.openChannel,
-      action: 'deposit'
+      action: 'deposit',
     });
 
     await wrapper.vm.$nextTick();
-    expect(wrapper.find(ChannelDepositDialog).exists()).toBeTruthy();
+    expect(wrapper.findComponent(ChannelDepositDialog).exists()).toBeTruthy();
   });
 
   describe('depositing', () => {
     beforeEach(() => {
       wrapper.setProps({
-        channel: TestData.openChannel
+        channel: TestData.openChannel,
       });
     });
 
@@ -107,14 +108,39 @@ describe('ChannelDialogs.vue', () => {
       expect(messageEvent).toBeTruthy();
       const [firstMessageArg] = messageEvent?.shift();
       expect(firstMessageArg).toEqual('channel-list.messages.deposit.failure');
-      expect(wrapper.emitted('dismiss')).toBeUndefined();
+    });
+  });
+
+  describe('withdrawing', () => {
+    beforeEach(() => {
+      wrapper.setProps({
+        channel: TestData.openChannel,
+      });
+    });
+
+    test('success', async () => {
+      await (wrapper.vm as any).withdraw(One);
+      const messageEvent = wrapper.emitted('message');
+      expect(messageEvent).toBeTruthy();
+      const [firstMessageArg] = messageEvent?.shift();
+      expect(firstMessageArg).toEqual('channel-list.messages.withdraw.success');
+      expect(wrapper.emitted('dismiss')).toHaveLength(1);
+    });
+
+    test('fail', async () => {
+      $raiden.withdraw.mockRejectedValueOnce(new Error('failed'));
+      await (wrapper.vm as any).withdraw(One);
+      const messageEvent = wrapper.emitted('message');
+      expect(messageEvent).toBeTruthy();
+      const [firstMessageArg] = messageEvent?.shift();
+      expect(firstMessageArg).toEqual('channel-list.messages.withdraw.failure');
     });
   });
 
   describe('closing', () => {
     beforeEach(() => {
       wrapper.setProps({
-        channel: TestData.openChannel
+        channel: TestData.openChannel,
       });
     });
 
@@ -134,14 +160,18 @@ describe('ChannelDialogs.vue', () => {
       expect(messageEvent).toBeTruthy();
       const [firstMessageArg] = messageEvent?.shift();
       expect(firstMessageArg).toEqual('channel-list.messages.close.failure');
-      expect(wrapper.emitted('dismiss')).toHaveLength(1);
+      // error dialog is shown instead of dismissing
+      expect(wrapper.find('.error-message').isVisible()).toBeTruthy();
+      expect(wrapper.find('.error-message__label + p').text()).toMatch(
+        'failed'
+      );
     });
   });
 
   describe('settling', () => {
     beforeEach(() => {
       wrapper.setProps({
-        channel: TestData.settlableChannel
+        channel: TestData.settlableChannel,
       });
     });
 
@@ -161,7 +191,12 @@ describe('ChannelDialogs.vue', () => {
       expect(messageEvent).toBeTruthy();
       const [firstMessageArg] = messageEvent?.shift();
       expect(firstMessageArg).toEqual('channel-list.messages.settle.failure');
-      expect(wrapper.emitted('dismiss')).toHaveLength(1);
+
+      // error dialog is shown instead of dismissing
+      expect(wrapper.find('.error-message').isVisible()).toBeTruthy();
+      expect(wrapper.find('.error-message__label + p').text()).toMatch(
+        'failed'
+      );
     });
   });
 });

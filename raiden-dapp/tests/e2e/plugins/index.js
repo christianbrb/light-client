@@ -20,8 +20,8 @@ module.exports = (on, config) => {
         extensions: ['.ts', '.tsx', '.js'],
         // add the alias object
         alias: {
-          '@': path.resolve(__dirname, '../../../src')
-        }
+          '@': path.resolve(__dirname, '../../../src'),
+        },
       },
       module: {
         rules: [
@@ -29,24 +29,18 @@ module.exports = (on, config) => {
             // Include ts, tsx, js, and jsx files.
             test: /\.(ts|js)x?$/,
             exclude: /node_modules/,
-            loader: 'babel-loader'
+            loader: 'babel-loader',
           },
           {
             test: /\.js$/,
             use: ['source-map-loader'],
-            enforce: 'pre'
-          }
-        ]
-      }
-    }
+            enforce: 'pre',
+          },
+        ],
+      },
+    },
   };
   on('file:preprocessor', wp(options));
 
-  return Object.assign({}, config, {
-    fixturesFolder: 'tests/e2e/fixtures',
-    integrationFolder: 'tests/e2e/specs',
-    screenshotsFolder: 'tests/e2e/screenshots',
-    videosFolder: 'tests/e2e/videos',
-    supportFile: 'tests/e2e/support/index.ts'
-  });
+  return Object.assign({}, config);
 };

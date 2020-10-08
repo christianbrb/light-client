@@ -2,17 +2,127 @@
 
 ## [Unreleased]
 ### Fixed
-- [#1637] Fix depositToUDC failing if services already have withdrawn some fees
+- [#2094] Fix TransferState's timestamps missing
 
 ### Added
+- [#2044] Introduce PouchDB (IndexedDB/leveldown) as new persistent state storage backend
+
+### Changed
+- [#2158] Adapt WebRTC to new protocol compatible with python client
+
+[#2044]: https://github.com/raiden-network/light-client/issues/2044
+[#2094]: https://github.com/raiden-network/light-client/issues/2094
+[#2158]: https://github.com/raiden-network/light-client/issues/2158
+
+## [0.11.1] - 2020-08-18
+### Changed
+- [#2049] Target ES2019 (NodeJS 12+) on SDK builds
+- [#2054] Update to Raiden contracts `v0.37.1`
+
+[#2049]: https://github.com/raiden-network/light-client/issues/2049
+[#2054]: https://github.com/raiden-network/light-client/pulls/2054
+
+
+## [0.11.0] - 2020-08-04
+### Fixed
+- [#1923] Fix `fromEthersEvent` ranges fetching in case of temporary connectivity loss
+- [#1952] Fix nonce conflict issues with concurrent transactions
+- [#1997] Fix matrix rate-limiting logins when many nodes are started in parallel
+- [#1998] Fix events reverted due to a reorg still getting confirmed
+- [#2010] Fix multiple approve on secure ERC20 tokens, like RDN
+
+### Added
+- [#237] Add autoSettle config (off by default) to allow auto-settling settleable channels
+- [#703] Add option to fetch all contracts addresses from UserDeposit address alone
+- [#1710] Add option to specify a transfer's lock timeout
+- [#1910] Add option to `mint` tokens for any address
+- [#1913] Added `contractsInfo` getter holding current contracts info
+- [#1824] Expose channel settle actions as events
+- [#2022] Add 'pfsMaxFee', 'pfsMaxPaths' and 'pfsIouTimeout' config options
+
+### Changed
+- [#1905] Fail early if not enough tokens to deposit
+- [#1958] Transfers can fail before requesting PFS if there's no viable channel
+- [#2010] Token.approve defaults to MaxUint256, so only one approval is needed per token; set config.minimumAllowance to Zero to fallback to strict deposit values
+- [#2019] Use exponential back-off strategy for protocol messages retries
+
+[#237]: https://github.com/raiden-network/light-client/issues/237
+[#703]: https://github.com/raiden-network/light-client/issues/703
+[#1710]: https://github.com/raiden-network/light-client/issues/1710
+[#1824]: https://github.com/raiden-network/light-client/issues/1824
+[#1905]: https://github.com/raiden-network/light-client/issues/1905
+[#1910]: https://github.com/raiden-network/light-client/pull/1910
+[#1913]: https://github.com/raiden-network/light-client/pull/1913
+[#1923]: https://github.com/raiden-network/light-client/issues/1923
+[#1952]: https://github.com/raiden-network/light-client/issues/1952
+[#1958]: https://github.com/raiden-network/light-client/issues/1958
+[#1997]: https://github.com/raiden-network/light-client/issues/1997
+[#1998]: https://github.com/raiden-network/light-client/issues/1998
+[#2010]: https://github.com/raiden-network/light-client/issues/2010
+[#2019]: https://github.com/raiden-network/light-client/issues/2019
+[#2022]: https://github.com/raiden-network/light-client/pull/2022
+[#2049]: https://github.com/raiden-network/light-client/issues/2049
+
+## [0.10.0] - 2020-07-13
+### Fixed
+- [#1514] Fix handling of expired LockedTransfer and WithdrawRequest
+- [#1607] Fix settling when one side closes/updates with outdated BalanceProof
+- [#1637] Fix depositToUDC failing if services already have withdrawn some fees
+- [#1651] Fix PFS being disabled if passed an undefined default config
+- [#1690] Fix LockExpired with empty balanceHash verification
+- [#1698] Fix estimateGas errors on channelOpen not properly being handled
+- [#1761] Fix deposit error on openChannel not rejecting promise
+- [#1787] Fix TokenNetwork monitoring losing events
+- [#1830] Fix a nonce race when openining + depositing concurrently
+- [#1848] Fix a Metamask error by retry on deposit
+- [#1882] Fix paymentId gets ignored when being falsie (e.g. `0`)
+
+### Added
+- [#249] Add withdraw functionality
+- [#1374] Monitors MonitoringService contract and emit event when MS acts
+- [#1421] Adds support for withdrawing tokens from the UDC
 - [#1642] Check token's allowance before deposit and skip approve
+- [#1701] Allow parameter decoding to throw and log customized errors
+- [#1701] Add and extend error codes for user parameter validation for open channel
+- [#1711] Add and extend error codes for user parameter validation for transfer
+- [#1835] The presence knowledge for a payment routes target is secured automatically
 
 ### Changed
 - [#837] Changes the action tags from camel to path format. This change affects the event types exposed through the public API.
+- [#1610] Updates smart contracts to v0.37.0 (Alderaan)
+- [#1649] Have constant error messages and codes in public Raiden API.
+- [#1657] Expose RaidenChannel's id,settleTimeout,openBlock as required properties
+- [#1708] Expose RaidenTransfer's secret as optional property
+- [#1705] All transfers become monitored per default to make receiving transfers safe
+- [#1822] Refactor and optimize TokenNetwork events monitoring: one filter per Tokennetwork
+- [#1832] Make Provider events fetching more reliable with Infura
 
+[#249]: https://github.com/raiden-network/light-client/issues/249
 [#837]: https://github.com/raiden-network/light-client/issues/837
+[#1374]: https://github.com/raiden-network/light-client/issues/1374
+[#1421]: https://github.com/raiden-network/light-client/issues/1421
+[#1514]: https://github.com/raiden-network/light-client/issues/1514
+[#1607]: https://github.com/raiden-network/light-client/issues/1607
+[#1610]: https://github.com/raiden-network/light-client/issues/1610
 [#1637]: https://github.com/raiden-network/light-client/issues/1637
 [#1642]: https://github.com/raiden-network/light-client/issues/1642
+[#1649]: https://github.com/raiden-network/light-client/pull/1649
+[#1651]: https://github.com/raiden-network/light-client/issues/1651
+[#1657]: https://github.com/raiden-network/light-client/issues/1657
+[#1690]: https://github.com/raiden-network/light-client/issues/1690
+[#1698]: https://github.com/raiden-network/light-client/issues/1698
+[#1701]: https://github.com/raiden-network/light-client/pull/1701
+[#1708]: https://github.com/raiden-network/light-client/issues/1708
+[#1705]: https://github.com/raiden-network/light-client/issues/1705
+[#1711]: https://github.com/raiden-network/light-client/pull/1711
+[#1761]: https://github.com/raiden-network/light-client/issues/1761
+[#1787]: https://github.com/raiden-network/light-client/issues/1787
+[#1822]: https://github.com/raiden-network/light-client/pull/1822
+[#1830]: https://github.com/raiden-network/light-client/issues/1830
+[#1832]: https://github.com/raiden-network/light-client/pull/1832
+[#1835]: https://github.com/raiden-network/light-client/pull/1835
+[#1848]: https://github.com/raiden-network/light-client/issues/1848
+[#1882]: https://github.com/raiden-network/light-client/issues/1882
 
 ## [0.9.0] - 2020-05-28
 ### Added
@@ -168,8 +278,8 @@
 - Update message packing and signature to confront with Alderaan format.
 - Optimize past event scanning.
 - Make transfer parameters consistent with openChannel.
-- Update previous transfer initialization to monitor pending transfers. 
-- Update the transfer mechanism to accept transfers that are reduced up to 10% due to fees. 
+- Update previous transfer initialization to monitor pending transfers.
+- Update the transfer mechanism to accept transfers that are reduced up to 10% due to fees.
 - Increase time before leaving unknown rooms.
 - Reduce the minimum settle timeout to 20.
 - Remove fee field from LockedTransfer to comply with raiden-py.
@@ -196,7 +306,7 @@
 - Add monitoring for transfers based on secret hash.
 
 ### Changed
-- Change transfer api return secret hash. 
+- Change transfer api return secret hash.
 
 ## [0.1] - 2019-08-21
 ### Added
@@ -211,7 +321,9 @@
 - Add protocol message implementation.
 
 
-[Unreleased]: https://github.com/raiden-network/light-client/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/raiden-network/light-client/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/raiden-network/light-client/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/raiden-network/light-client/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/raiden-network/light-client/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/raiden-network/light-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/raiden-network/light-client/compare/v0.6.0...v0.7.0

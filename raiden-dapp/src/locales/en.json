@@ -1,6 +1,15 @@
 {
+  "disclaimer": {
+    "paragraphs": [
+      "This is a Beta version of experimental open source software released as a test version under an MIT license and may contain errors and/or bugs. No guarantee or representation whatsoever is made regarding its suitability (or its use) for any purpose or regarding its compliance with any applicable laws and regulations. Use of the software is at your own risk and discretion and by using the software you warrant and represent that you have read this disclaimer, understand its contents, assume all risk related thereto and hereby release, waive, discharge and covenant not to hold liable Brainbot Labs Establishment or any of its officers, employees or affiliates from and for any direct or indirect damage resulting from the the software or the use thereof. Such to the extent as permissible by applicable laws and regulations.",
+      " Privacy warning: Please be aware, that by using the Raiden Client, among others your Ethereum address, channels, channel deposits, settlements and the Ethereum address of your channel counterparty will be stored on the Ethereum chain, i.e. on servers of Ethereum node operators and ergo are to a certain extent publicly available. The same might also be stored on systems of parties running Raiden nodes connected to the same token network. Data present in the Ethereum chain is very unlikely to be able to be changed, removed or deleted from the public arena.",
+      " Also be aware, that data on individual Raiden token transfers will be made available via the Matrix protocol to the recipient, intermediating nodes of a specific transfer as well as to the Matrix server operators, see Raiden Transport Specification."
+    ],
+    "accept-checkbox": "I have read, understood and hereby accept the above disclaimer and privacy warning",
+    "persist-checkbox": "Don't display this message on start up",
+    "accept-button": "Accept"
+  },
   "home": {
-    "title": "Raiden dApp",
     "welcome": "Welcome to the Raiden dApp",
     "connect-button": "Connect",
     "disclaimer": "The Raiden dApp is a reference implementation of the Raiden Light Client SDK. It is work in progress and can only be used on Ethereum testnets.",
@@ -14,6 +23,51 @@
       "description-raiden-account": "A Raiden Account will be generated.",
       "description-web3-account": "You can use your Web3 account directly by enabling it in the settings menu.",
       "no-provider": "No Web3 provider detected, please install e.g. MetaMask."
+    }
+  },
+  "notifications": {
+    "no-notifications": "No notifications",
+    "ms-balance-proof": {
+      "title": "Balance proof submitted",
+      "description": "A monitoring service successfully submitted a balance proof for a channel claiming a reward of {reward} {symbol}. Service: {monitoringService}, Partner: {partner}, Transaction: {txHash}"
+    },
+    "withdrawal": {
+      "success": {
+        "title": "User Deposit Withdrawal",
+        "description": "A planned withdrawal of {amount} {symbol} was successfully completed withdrawing {withdrawal} {symbol}"
+      },
+      "failure": {
+        "title": "User Deposit Withdrawal",
+        "description": "The planned withdrawal of {amount} {symbol} failed: {message}",
+        "descriptions": {
+          "UDC_WITHDRAW_NO_BALANCE": "We could not complete the withdrawal of {amount} {symbol} because there was not enough balance.",
+          "UDC_WITHDRAW_FAILED": "We could not complete the withdrawal of {amount} {symbol} because the transaction failed."
+        }
+      }
+    },
+    "clear": "Clear",
+    "block-count-progress": "Blocks remaining: ",
+    "settlement": {
+      "icon": "notification_settle",
+      "success": {
+        "title": "Channel Settlement",
+        "description": "Channel with {partner} was settled."
+      },
+      "failure": {
+        "title": "Channel Settlement",
+        "description": "Channel settlement with {partner} failed."
+      }
+    },
+    "channel-open": {
+      "icon": "notification_channels",
+      "success": {
+        "title": "Channel Open",
+        "description": "Open channel with {partner}.",
+        "block-count-success": "Channel successfully opened"
+      },
+      "failure": {
+        "title": "Channel Open Failure"
+      }
     }
   },
   "general": {
@@ -74,8 +128,12 @@
     "description": "Your UDC (User Deposit Contract) contains utility tokens for your current account. The tokens are used to pay for services such as pathfinding and monitoring.",
     "deposit": "Deposit",
     "mint-deposit": "Mint and deposit",
-    "balance": "UDC Balance:",
-    "balance-too-low": "Your {symbol} balance is too low to pay for the Monitoring Service. Receiving transfers has been temporarily disabled. Use the button above to mint an deposit more tokens. A minimum amount of 5 {service} is needed to enable receiving."
+    "balance": "Your current UDC balance is:",
+    "withdrawal": "Withdrawal",
+    "asterisk": "*",
+    "withdrawal-footnote": "Actual withdrawal amount might vary",
+    "balance-too-low": "Your {symbol} balance is too low to pay for the Monitoring Service. Receiving transfers has been temporarily disabled. Use the button above to mint an deposit more tokens. A minimum amount of 5 {service} is needed to enable receiving.",
+    "withdrawal-planned": "The withdrawal from the user deposit has been planned. You will get notified when the withdrawal is complete."
   },
   "backup-state": {
     "description": "The state holds all account information except the private key. You can backup your state to make sure the dApp is kept in sync when switching between browsers.",
@@ -84,7 +142,7 @@
     "download": "Download State",
     "download-warning": "Downloading the state will force the dApp to shut down",
     "download-button": "Download",
-    "upload": "Upload State",
+    "upload": "Upload State and Connect",
     "upload-drag-and-drop": "Drag and drop state file",
     "upload-divider": "or",
     "upload-button": "Browse files",
@@ -131,11 +189,11 @@
     "copied": "Copied!"
   },
   "app-header": {
-    "currency": "ETH",
-    "pending-transfers": "no pending transfers | 1 pending transfer | {amount} pending transfers"
+    "currency": "ETH"
   },
   "channel-actions": {
     "deposit": "Deposit",
+    "withdraw": "Withdraw",
     "close": "Close",
     "settle": "Settle"
   },
@@ -145,6 +203,24 @@
     },
     "input": {
       "label": "Amount"
+    }
+  },
+  "channel-withdraw": {
+    "buttons": {
+      "confirm": "Withdraw"
+    },
+    "input": {
+      "label": "Amount"
+    },
+    "dialog": {
+      "label": "Withdraw",
+      "title": "Withdrawing Tokens",
+      "description": "Sign the transaction in MetaMask and close this dialogue to continue using the dApp."
+    },
+    "done": {
+      "label": "Done",
+      "title": "Withdraw Successful",
+      "description": "Your tokens have been successfully withdrawn."
     }
   },
   "find-routes": {
@@ -188,7 +264,7 @@
   "channel-list": {
     "channel": {
       "blockie_alt": "Partner address blockie",
-      "state": "Deposit {deposit} | State: {state}",
+      "state": "Capacity: {value} | State: {state}",
       "close_dialog": {
         "title": "Close Channel",
         "description": "Are you sure you want to close this channel? This action cannot be undone."
@@ -206,6 +282,10 @@
       "deposit": {
         "success": "Deposit was successful",
         "failure": "Deposit failed"
+      },
+      "withdraw": {
+        "success": "Withdraw was successful",
+        "failure": "Withdraw failed"
       },
       "settle": {
         "success": "Channel settle was successful",
@@ -237,15 +317,7 @@
   },
   "tokens": {
     "connected": {
-      "header": "Connected Tokens",
-      "token": {
-        "blockie-alt": "Partner address blockie",
-        "token-info": "{symbol} | {name}",
-        "buttons": {
-          "disconnect": "Disconnect Token",
-          "view-channels": "View Channels"
-        }
-      }
+      "header": "Connected Tokens"
     },
     "connect-new": "Connect new token",
     "disconnect-dialog": {
@@ -267,8 +339,12 @@
     "privacy-policy": "Privacy Policy, Disclaimer & Imprint"
   },
   "udc-deposit-dialog": {
+    "title": "Deposit to UDC",
     "button": "Mint and deposit",
     "button-main": "Deposit",
+    "uniswap-url-title": "Click here to purchase RDN",
+    "uniswap-url": "https://app.uniswap.org/#/swap?inputCurrency=ETH&outputCurrency={rdnToken}&exactAmount=10&exactField=outPUT&recipient={mainAccountAddress}",
+    "available-utility-token": "Available {utilityTokenSymbol} to deposit: {utilityTokenBalance}",
     "available": "Available {currency} to pay for on-chain transaction: {balance} {currency}",
     "error": "The mint and deposit operation failed.",
     "error-main": "The deposit operation failed.",
@@ -279,9 +355,6 @@
     }
   },
   "transfer": {
-    "transfer-title": "Make Transfer",
-    "deposit-button": "Deposit",
-    "channel-button": "Channels",
     "capacity-label": "Capacity",
     "recipient-label": "Recipient",
     "amount-label": "Amount",
@@ -290,6 +363,19 @@
       "button": "Dismiss",
       "title": "Token transfer unsuccessful",
       "deposit-title": "Deposit failed, please try again."
+    },
+    "transfer-menus": {
+      "change-token-title": "Change Token",
+      "deposit-button": "Deposit",
+      "channel-button": "Channels",
+      "no-channels": "No open channels"
+    },
+    "transfer-inputs": {
+      "title": "Transfer"
+    },
+    "no-channels-dialog": {
+      "title": "No connected tokens and open channels",
+      "button": "Connect new token"
     },
     "steps": {
       "request-route": {
@@ -323,8 +409,7 @@
         }
       },
       "transfer": {
-        "title": "Transferring Tokens",
-        "description": "Sign the transaction in MetaMask and close this dialogue to continue using the dApp. Your transfer will finish in the background."
+        "title": "Transferring Tokens"
       },
       "done": {
         "title": "Send Successful",
@@ -361,7 +446,7 @@
     }
   },
   "transfer-history": {
-    "title": "Transfer History",
+    "title": "History",
     "sent-title": "Sent to",
     "sent-symbol": "-",
     "received-title": "Received from",
@@ -371,13 +456,7 @@
     "failed-transfer": "FAILED"
   },
   "select-token": {
-    "header": "Available",
-    "tokens": {
-      "token": {
-        "blockie-alt": "Token address blockie",
-        "token-information": "{symbol} | {name}"
-      }
-    }
+    "header": "Available Tokens"
   },
   "select-hub": {
     "select-button": "Select Hub",
@@ -579,6 +658,12 @@
     "raiden-account": {
       "title": "Use Raiden Account",
       "description": "By default the dApp uses a generated Raiden account to sign messages. Disable the Raiden account to use your Web3 provider account. All messages will then have to be signed manually."
+    }
+  },
+  "token-list": {
+    "item": {
+      "blockie-alt": "Token address blockie",
+      "information-template": "{symbol} | {name}"
     }
   }
 }

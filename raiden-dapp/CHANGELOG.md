@@ -1,23 +1,129 @@
 # Changelog
 
 ## [Unreleased]
+### Fixed
+- [#2026] Removed delay time on tooltips
+- [#2098] Input fields disabled on transfer screen when no channels are open
+- [#1838] Fixes Disclaimer mobile layout
+- [#2096] Fixes buggy wallet connection procedure
+- [#2144] Fixes navigation to transfer screen when token was selected
+- [#2159] Fixes routing issues for account and transfer steps
+- [#2238] Fixes broken token overlay for too many connected tokens
+
+### Added
+- [#1941] Notification for opening channels
+- [#1255] Optional identifier query parameter for transfers
+
+### Changes
+- [#1929] Design adjustments to settlement notifications and notification panel 
+
+[#1255]: https://github.com/raiden-network/light-client/issues/1255
+[#1941]: https://github.com/raiden-network/light-client/issues/1941
+[#2026]: https://github.com/raiden-network/light-client/issues/2026
+[#1929]: https://github.com/raiden-network/light-client/issues/1929
+[#2098]: https://github.com/raiden-network/light-client/issues/2098
+[#1838]: https://github.com/raiden-network/light-client/issues/1838
+[#2096]: https://github.com/raiden-network/light-client/issues/1838
+[#2144]: https://github.com/raiden-network/light-client/issues/2144
+[#2159]: https://github.com/raiden-network/light-client/issues/2144
+[#2138]: https://github.com/raiden-network/light-client/issues/2138
+
+## [0.11.1] - 2020-08-18
+### Fixed
+- [#2047] Conversion and token amount display in UDC deposit dialog
+
+### Added
+- [#2039] Dialog with redirect button if all channels are settled
+
+### Changed
+- [#1951] Update to be compatible with Raiden Python client `v1.1.1`
+
+[#2039]: https://github.com/raiden-network/light-client/issues/2039
+[#2047]: https://github.com/raiden-network/light-client/issues/2047
+[#1951]: https://github.com/raiden-network/light-client/issues/1951
+
+## [0.11.0] - 2020-08-04
+
+### Fixed
+- [#2031] "No open channels" displayed instead of 0 balance on transfer screen
 
 ### Added
 
-- [#168] Notification panel
-
-
-### Fixed
-
-- [#1579] Removes minting references when detected network is mainnet.
+- [#1786] Introduces snackbar display for notifications
+- [#1824] Listen to channel settle events and push notifications for them
+- [#2002] Add support to VUE_APP_MATRIX_LIST_URL transpile-time env var
+- [#1658] Add a disclaimer that the user needs to accept to get access to the app
 
 ### Changed
 
+- [#1925] Transfer screen style alignments
+- [#2001] Pending transfers removed from identicon
+- [#1770] Updated UDC deposit dialog for mainnet
+- [#1931] dApp always uses hash mode on router
+- [#1769] Updated UDC deposit dialog for testnet
+- [#1768] Updated UDC screen
+- [#1265] Reduce logs size by hiding superfluous actions entries
+- [#1875] Redact sensitive information (transport's accessToken, transfer's secrets) from logs
+- [#2033] Transfer history gets filtered for the selected token
+
+[#2031]: https://github.com/raiden-network/light-client/issues/2031
+[#1925]: https://github.com/raiden-network/light-client/issues/1925
+[#2001]: https://github.com/raiden-network/light-client/issues/2001
+[#1770]: https://github.com/raiden-network/light-client/issues/1770
+[#1931]: https://github.com/raiden-network/light-client/issues/1931
+[#1769]: https://github.com/raiden-network/light-client/issues/1769
+[#1768]: https://github.com/raiden-network/light-client/issues/1768
+[#1265]: https://github.com/raiden-network/light-client/issues/1265
+[#1786]: https://github.com/raiden-network/light-client/issues/1786
+[#1824]: https://github.com/raiden-network/light-client/issues/1824
+[#1875]: https://github.com/raiden-network/light-client/issues/1875
+[#2002]: https://github.com/raiden-network/light-client/issues/2002
+[#1658]: https://github.com/raiden-network/light-client/issues/1658
+[#2033]: https://github.com/raiden-network/light-client/issues/2033
+
+## [0.10.0] - 2020-07-13
+
+### Added
+
+- [#1791] Introduces configuration for token network monitoring.
+- [#1374] Adds notifications when a monitoring service submits a proof.
+- [#1421] Dialog to withdraw from the user deposit.
+- [#249] Withdraw from channel functionality
+- [#168] Notification panel
+
+### Fixed
+
+- [#1788] Bug where button is displayed and modal not closing on UDC withdrawal
+- [#1781] Transparent dialog overlay for Firefox
+- [#1783] Minor visual alignments
+- [#1579] Removes minting references when detected network is mainnet.
+- [#1773] Fix performance issues of progress indicators
+- [#1756] Fix non-informative error message on SDK's wrapped errors
+- [#1805] Fix unintended automatic stop of Raiden Service by web-browser
+- [#1876] Show error message on Channels screen if an exception occurs
+
+### Changed
+
+- [#1460] New transfer screen
+- [#1610] Adds alderaan compatibility.
 - [#1540] Adds title to channels list to clarify that only channels for the selected token display.
 
+[#1460]: https://github.com/raiden-network/light-client/issues/1460
+[#1788]: https://github.com/raiden-network/light-client/issues/1788
+[#1791]: https://github.com/raiden-network/light-client/issues/1791
+[#1781]: https://github.com/raiden-network/light-client/issues/1781
+[#1783]: https://github.com/raiden-network/light-client/issues/1783
+[#1756]: https://github.com/raiden-network/light-client/issues/1756
+[#1773]: https://github.com/raiden-network/light-client/issues/1773
+[#1610]: https://github.com/raiden-network/light-client/issues/1610
 [#1540]: https://github.com/raiden-network/light-client/issues/1540
 [#1579]: https://github.com/raiden-network/light-client/issues/1579
+[#1421]: https://github.com/raiden-network/light-client/issues/1421
+[#1374]: https://github.com/raiden-network/light-client/issues/1374
+[#249]: https://github.com/raiden-network/light-client/issues/249
 [#168]: https://github.com/raiden-network/light-client/issues/168
+[#1805]: https://github.com/raiden-network/light-client/issues/1805
+[#1876]: https://github.com/raiden-network/light-client/pull/1876
 
 ## [0.9.0] - 2020-05-28
 
@@ -321,7 +427,9 @@
 - Add link to privacy policy.
 - Add basic transfer screen.
 
-[unreleased]: https://github.com/raiden-network/light-client/compare/v0.9.0...HEAD
+[unreleased]: https://github.com/raiden-network/light-client/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/raiden-network/light-client/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/raiden-network/light-client/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/raiden-network/light-client/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/raiden-network/light-client/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/raiden-network/light-client/compare/v0.6.0...v0.7.0

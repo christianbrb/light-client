@@ -2,26 +2,71 @@
   <div id="notification-panel">
     <div class="notification-panel-content">
       <div class="notification-panel-content__close">
+        <v-btn text @click="clear()">
+          {{ $t('notifications.clear') }}
+        </v-btn>
+        <v-spacer />
         <v-icon icon @click="onModalBackClicked()">mdi-close</v-icon>
       </div>
-      <div class="notification-panel-content__notification-wrapper">
-        <notification-card />
-      </div>
+      <v-row
+        v-if="notifications.length === 0"
+        class="notification-panel-content__no-notifications full-height"
+        no-gutters
+        justify="center"
+        align="center"
+      >
+        {{ $t('notifications.no-notifications') }}
+      </v-row>
+      <v-container
+        v-else
+        class="notification-panel-content__notifications"
+        fluid
+      >
+        <div
+          class="notification-panel-content__notifications__notification-wrapper"
+        >
+          <v-list color="transparent">
+            <div v-for="notification of notifications" :key="notification.id">
+              <v-lazy
+                transition="fade-transition"
+                :options="{ threshold: 0.7 }"
+                min-height="110"
+              >
+                <notification-card
+                  :notification="notification"
+                  class="notification-panel-content__notifications__notification-wrapper__notification"
+                />
+              </v-lazy>
+            </div>
+          </v-list>
+        </div>
+      </v-container>
     </div>
   </div>
 </template>
 
 <script lang="ts">
 import { Component, Mixins } from 'vue-property-decorator';
+import { mapGetters, mapMutations } from 'vuex';
 import NavigationMixin from '@/mixins/navigation-mixin';
 import NotificationCard from '@/components/notification-panel/NotificationCard.vue';
+import { NotificationPayload } from '@/store/notifications/types';
 
 @Component({
   components: {
-    NotificationCard
-  }
+    NotificationCard,
+  },
+  computed: {
+    ...mapGetters('notifications', ['notifications']),
+  },
+  methods: {
+    ...mapMutations('notifications', ['clear']),
+  },
 })
-export default class NotificationPanel extends Mixins(NavigationMixin) {}
+export default class NotificationPanel extends Mixins(NavigationMixin) {
+  notifications!: { [key: number]: NotificationPayload };
+  clear!: () => void;
+}
 </script>
 
 <style scoped lang="scss">
@@ -42,7 +87,7 @@ export default class NotificationPanel extends Mixins(NavigationMixin) {}
 }
 
 .notification-panel-content {
-  background-color: $card-background;
+  background-color: $notification-panel-bg;
   border-radius: 10px;
   display: flex;
   flex-direction: column;
@@ -62,8 +107,26 @@ export default class NotificationPanel extends Mixins(NavigationMixin) {}
     margin: 30px 30px 0 0;
   }
 
-  &__notification-wrapper {
-    margin: 20px 40px 0 40px;
+  &__no-notifications {
+    font-size: 24px;
+    margin-bottom: 60px;
+  }
+
+  &__notifications {
+    height: 100%;
+    margin-bottom: 30px;
+    overflow-y: scroll;
+    scrollbar-width: none;
+    width: 100%;
+
+    &__notification-wrapper {
+      max-height: 200px;
+      margin: 0 25px 0 25px;
+
+      &__notification {
+        margin-bottom: 20px;
+      }
+    }
   }
 }
 </style>

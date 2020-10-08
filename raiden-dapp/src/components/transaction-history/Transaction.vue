@@ -4,14 +4,14 @@
       <v-col class="transaction__item__icon" cols="1">
         <v-img
           v-if="transfer.direction === 'sent'"
-          height="45px"
-          width="45px"
+          height="38px"
+          width="38px"
           :src="require('@/assets/sent_transfer.svg')"
         />
         <v-img
           v-else
-          height="45px"
-          width="45px"
+          height="38px"
+          width="38px"
           :src="require('@/assets/received_transfer.svg')"
         />
       </v-col>
@@ -83,7 +83,8 @@
 
 <script lang="ts">
 import { Component, Prop, Vue } from 'vue-property-decorator';
-import { Tokens, Transfers } from '@/types';
+import { RaidenTransfer } from 'raiden-ts';
+import { Tokens } from '@/types';
 import AddressDisplay from '@/components/AddressDisplay.vue';
 import AmountDisplay from '@/components/AmountDisplay.vue';
 import { mapState } from 'vuex';
@@ -91,32 +92,40 @@ import { mapState } from 'vuex';
 @Component({
   components: {
     AddressDisplay,
-    AmountDisplay
+    AmountDisplay,
   },
   computed: {
-    ...mapState(['tokens'])
-  }
+    ...mapState(['tokens']),
+  },
 })
 export default class Transaction extends Vue {
   @Prop({ required: true })
-  transfer!: Transfers;
+  transfer!: RaidenTransfer;
   tokens!: Tokens;
 }
 </script>
 
 <style scoped lang="scss">
 @import '../../main';
-@import '../../scss/colors';
+@import '@/scss/mixins';
+@import '@/scss/colors';
 
 .transaction {
   height: 74px;
+  @include respond-to(handhelds) {
+    height: 90px;
+  }
 
   &__item {
+    &__icon {
+      margin-top: 2px;
+    }
+
     &__details-left {
       margin-left: 20px;
 
       &__address {
-        padding: 0 0 2px 5px;
+        padding: 1px 0 2px 5px;
       }
 
       &__time-stamp {

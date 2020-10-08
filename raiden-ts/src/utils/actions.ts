@@ -5,8 +5,9 @@ import isMatchWith from 'lodash/isMatchWith';
 import { Observable } from 'rxjs';
 import { first, map } from 'rxjs/operators';
 
-import { RaidenError, ErrorCodes, ErrorCodec } from '../utils/error';
-import { BigNumberC, assert } from './types';
+import { assert } from '../utils';
+import { RaidenError, ErrorCodes } from '../utils/error';
+import { BigNumberC } from './types';
 
 /**
  * The type of a generic action
@@ -121,6 +122,9 @@ export type ActionCreator<
 > = ActionFactory<TType, TPayload, TMeta, TError> &
   ActionCreatorMembers<TType, TPayload, TMeta, TError>;
 
+export type AnyAC = ActionCreator<any, any, any, any>;
+export type TTypeOf<T> = T extends ActionCreator<infer TType, any, any, any> ? TType : never;
+
 /**
  * Type helper to extract the type of an action or a mapping of actions
  * Usage: const action: ActionType<typeof actionCreator>;
@@ -226,10 +230,6 @@ export function createAction<
  *   const addTodo = createAction('ADD_TODO', undefined, t.type({ folder: t.string }));
  *
  * @param args - typesafe args tuple
- * @param args.0 - type literal string tag for action
- * @param args.1 - payload codec, optional
- * @param args.2 - meta codec, optional
- * @param args.3 - error flag, will only be present if defined (either false or true)
  * @returns ActionCreator factory function with useful properties. See [[ActionCreatorMembers]]
  */
 export function createAction<
@@ -276,14 +276,16 @@ export type AsyncActionCreator<
   TFailureType extends string,
   TRequestPayload extends t.Mixed | undefined,
   TSuccessPayload extends t.Mixed | undefined,
-  TFailurePayload extends t.Mixed | undefined = typeof ErrorCodec
+  TFailurePayload extends t.Mixed | undefined = typeof t.any
 > = {
   request: ActionCreator<TRequestType, TRequestPayload, TMeta>;
   success: ActionCreator<TSuccessType, TSuccessPayload, TMeta>;
   failure: ActionCreator<TFailureType, TFailurePayload, TMeta, true>;
 };
 
-// overloads to account for the optional failure payload (defaults to ErrorCodec)
+export type AnyAAC = AsyncActionCreator<any, any, any, any, any, any, any>;
+
+// overloads to account for the optional failure payload (defaults to t.any)
 export function createAsyncAction<
   TMeta extends t.Mixed,
   TRequestType extends string,
@@ -305,7 +307,7 @@ export function createAsyncAction<
   TFailureType,
   TRequestPayload,
   TSuccessPayload,
-  typeof ErrorCodec
+  typeof t.any
 >;
 export function createAsyncAction<
   TMeta extends t.Mixed,
@@ -348,7 +350,7 @@ export function createAsyncAction<
  * @param ftype - Failure literal string tag
  * @param rpayload - Request payload codec
  * @param spayload - Success payload codec
- * @param args - Optional fpayload - Failure payload codec, defaults to ErrorCodec
+ * @param args - Optional fpayload - Failure payload codec, defaults to t.any
  * @returns Async actions
  */
 export function createAsyncAction<
@@ -358,7 +360,7 @@ export function createAsyncAction<
   TFailureType extends string,
   TRequestPayload extends t.Mixed | undefined,
   TSuccessPayload extends t.Mixed | undefined,
-  TFailurePayload extends t.Mixed | undefined = typeof ErrorCodec
+  TFailurePayload extends t.Mixed | undefined = typeof t.any
 >(
   meta: TMeta,
   rtype: TRequestType,
@@ -366,7 +368,7 @@ export function createAsyncAction<
   ftype: TFailureType,
   rpayload: TRequestPayload,
   spayload: TSuccessPayload,
-  ...args: TFailurePayload extends typeof ErrorCodec ? [TFailurePayload] | [] : [TFailurePayload]
+  ...args: TFailurePayload extends typeof t.any ? [TFailurePayload] | [] : [TFailurePayload]
 ): AsyncActionCreator<
   TMeta,
   TRequestType,
@@ -376,7 +378,7 @@ export function createAsyncAction<
   TSuccessPayload,
   TFailurePayload
 > {
-  const fpayload = args.length ? (args[0] as TFailurePayload) : ErrorCodec;
+  const fpayload = args.length ? (args[0] as TFailurePayload) : t.any;
   const request = createAction(rtype, rpayload, meta);
   const success = createAction(stype, spayload, meta);
   const failure = createAction(ftype, fpayload, meta, true) as ActionCreator<
@@ -399,7 +401,6 @@ function matchMeta(meta: any): (action: { meta: any }) => boolean;
  *
  * @param meta - meta base for comparison
  * @param args - curried args array
- * @param args.0 - action to test meta against the 1st param
  * @returns true if metas are compatible, false otherwise
  */
 function matchMeta(meta: any, ...args: [{ meta: any }] | []) {
@@ -529,7 +530,7 @@ export async function asyncActionToPromise<
       map((action) => {
         if (asyncAction.failure.is(action))
           throw action.payload as ActionType<AAC['failure']>['payload'];
-        else if (action.payload.confirmed === false)
+        else if (action.payload?.confirmed === false)
           throw new RaidenError(ErrorCodes.RDN_TRANSACTION_REORG, {
             transactionHash: action.payload.txHash!,
           });
@@ -540,14 +541,6 @@ export async function asyncActionToPromise<
 }
 
 // createReducer
-
-/**
- * A simplified schema for ActionCreator<any, any, any, any>, to optimize createReducer
- */
-export type AnyAC = ((payload: any, meta: any) => Action) & {
-  type: string;
-  is: (action: unknown) => action is Action;
-};
 
 /**
  * Create a reducer which can be extended with additional actions handlers
@@ -562,6 +555,13 @@ export type AnyAC = ((payload: any, meta: any) => Action) & {
  * @returns A reducer function, extended with a handle method to extend it
  */
 export function createReducer<S, A extends Action = Action>(initialState: S) {
+  /**
+   * A simplified schema for ActionCreator<any, any, any, any>, to optimize createReducer
+   */
+  type AnyAC = ((payload: any, meta: any) => Action) & {
+    type: string;
+    is: (action: unknown) => action is Action;
+  };
   // generic handlers as a indexed type for `makeReducer`
   type Handlers = {
     [type: string]: [AnyAC, (state: S, action: A) => S];

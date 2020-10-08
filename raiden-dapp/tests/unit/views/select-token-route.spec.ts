@@ -1,38 +1,48 @@
 import Vue from 'vue';
+import { shallowMount, Wrapper } from '@vue/test-utils';
 import Vuetify from 'vuetify';
-import { mount, Wrapper } from '@vue/test-utils';
-import store from '@/store';
-import { $identicon } from '../utils/mocks';
+import Vuex, { Store } from 'vuex';
+import { generateToken } from '../utils/data-generator';
 import SelectTokenRoute from '@/views/SelectTokenRoute.vue';
+import TokenList from '@/components/tokens/TokenList.vue';
 
 Vue.use(Vuetify);
+Vue.use(Vuex);
+
+const token = generateToken();
 
 describe('SelectTokenRoute.vue', () => {
   let wrapper: Wrapper<SelectTokenRoute>;
-  let vuetify: typeof Vuetify;
 
   beforeEach(() => {
-    vuetify = new Vuetify();
-    wrapper = mount(SelectTokenRoute, {
+    const vuetify = new Vuetify();
+    wrapper = shallowMount(SelectTokenRoute, {
       vuetify,
-      store,
-      stubs: ['home', 'select-token'],
+      store: new Store({
+        getters: {
+          allTokens: () => [token],
+        },
+      }),
       mocks: {
-        $identicon: $identicon(),
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+        $raiden: {
+          fetchTokenList: async () => null,
+        },
+      },
     });
+
+    (wrapper.vm as any).navigateToSelectHub = jest.fn();
   });
 
-  test('disconnected displays home', async () => {
-    expect(wrapper.find('home-stub').exists()).toBe(true);
+  test('shows token list', () => {
+    const tokenList = wrapper.findComponent(TokenList);
+    expect(tokenList.exists()).toBe(true);
   });
 
-  test('connected displays actual route', async () => {
-    store.commit('account', '0x0000000000000000000000000000000000020001');
-    store.commit('loadComplete', true);
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find('home-stub').exists()).toBe(false);
-    expect(wrapper.find('select-token-stub').exists()).toBe(true);
+  test('navigates to the select hub route with address of given token', () => {
+    (wrapper.vm as any).selectToken(token);
+    expect((wrapper.vm as any).navigateToSelectHub).toHaveBeenCalledWith(
+      token.address
+    );
   });
 });

@@ -1,0 +1,28 @@
+{
+  "extends": [
+    "config:base"
+  ],
+  "commitMessagePrefix": "dependencies:",
+  "packageRules": [
+    {
+      "packagePatterns": [
+        "*"
+      ],
+      "updateTypes": ["minor", "patch", "pin", "digest", "lockFileMaintenance", "rollback", "bump"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch",
+      "schedule": ["after 8am on thursday"],
+      "lockFileMaintenance": { "enabled": true }
+    },
+    {
+      "updateTypes": ["major"],
+      "masterIssueApproval": true
+    }
+  ],
+  "masterIssue": true,
+  "labels": ["dependencies"],
+  "reviewers": ["team:raiden-network/light-client"],
+  "reviewersSampleSize": 1,
+  "rangeStrategy": "bump",
+  "timezone": "Europe/Berlin"
+}

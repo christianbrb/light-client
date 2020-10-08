@@ -3,8 +3,15 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   productionSourceMap: false,
-  publicPath: process.env.DEPLOYMENT === 'staging' ? '/staging/' : '/',
-  chainWebpack: config => {
+  // https://forum.vuejs.org/t/solution-to-building-error-in-circleci-or-any-other-machine-with-cpu-limitations/40862
+  parallel: !process.env.CIRCLECI,
+  publicPath:
+    process.env.NODE_ENV !== 'production'
+      ? './'
+      : process.env.DEPLOYMENT === 'staging'
+      ? '/staging/'
+      : '/',
+  chainWebpack: (config) => {
     if (process.env.NODE_ENV !== 'production' && !process.env.CI) {
       config.module
         .rule('raiden-source-maps')
@@ -34,16 +41,16 @@ module.exports = {
       locale: 'en',
       fallbackLocale: 'en',
       localeDir: 'locales',
-      enableInSFC: true
-    }
+      enableInSFC: true,
+    },
   },
   // check -> https://github.com/vuejs/vue-cli/issues/2978
-  configureWebpack: config => {
+  configureWebpack: (config) => {
     if (process.env.NODE_ENV === 'development') {
       config.devtool = 'eval-source-map';
       config.output.devtoolFallbackModuleFilenameTemplate =
         'webpack:///[resource-path]?[hash]';
-      config.output.devtoolModuleFilenameTemplate = info => {
+      config.output.devtoolModuleFilenameTemplate = (info) => {
         const isVue = info.resourcePath.match(/\.vue$/);
         const isScript = info.query.match(/type=script/);
         const hasModuleId = info.moduleId !== '';
@@ -72,11 +79,11 @@ module.exports = {
       patterns.push(
         {
           from: path.resolve(process.env.DEPLOYMENT_INFO),
-          to: path.resolve(__dirname, 'dist')
+          to: path.resolve(__dirname, 'dist'),
         },
         {
           from: path.resolve(process.env.DEPLOYMENT_SERVICES_INFO),
-          to: path.resolve(__dirname, 'dist')
+          to: path.resolve(__dirname, 'dist'),
         }
       );
     }
@@ -84,14 +91,14 @@ module.exports = {
     if (process.env.E2E) {
       patterns.push({
         from: path.resolve(__dirname, 'tests', 'e2e', 'e2e.json'),
-        to: path.resolve(__dirname, 'dist')
+        to: path.resolve(__dirname, 'dist'),
       });
     }
 
     if (patterns.length > 0) {
       config.plugins.push(
         new CopyWebpackPlugin({
-          patterns: patterns
+          patterns: patterns,
         })
       );
     }
@@ -100,7 +107,7 @@ module.exports = {
     workboxPluginMode: 'InjectManifest',
     workboxOptions: {
       swSrc: './src/sw.js',
-      swDest: 'service-worker.js'
-    }
-  }
+      swDest: 'service-worker.js',
+    },
+  },
 };

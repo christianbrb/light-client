@@ -20,12 +20,12 @@ describe('WithdrawalRoute.vue', () => {
       stubs: ['withdrawal'],
       mocks: {
         $identicon: $identicon(),
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
     });
   });
 
   test('component renders', () => {
-    expect(wrapper.is(WithdrawalRoute)).toBe(true);
+    expect(wrapper.find('withdrawal-stub')).toBeDefined();
   });
 });

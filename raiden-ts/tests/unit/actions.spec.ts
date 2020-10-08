@@ -2,7 +2,7 @@ import * as t from 'io-ts';
 import { from } from 'rxjs';
 import { bigNumberify } from 'ethers/utils';
 
-import { channelDeposit, channelMonitor } from 'raiden-ts/channels/actions';
+import { channelDeposit, channelMonitored } from 'raiden-ts/channels/actions';
 import { RaidenError, ErrorCodec, ErrorCodes } from 'raiden-ts/utils/error';
 import { Address, UInt, decode } from 'raiden-ts/utils/types';
 import {
@@ -14,16 +14,16 @@ import {
   asyncActionToPromise,
   createReducer,
 } from 'raiden-ts/utils/actions';
+import { ConfirmableAction } from 'raiden-ts/actions';
 
 describe('action factories not tested in reducers.spec.ts', () => {
   const tokenNetwork = '0x0000000000000000000000000000000000020001' as Address,
     partner = '0x0000000000000000000000000000000000000020' as Address;
-  test('channelMonitor', () => {
-    const id = 12,
-      fromBlock = 5123;
-    expect(channelMonitor({ id, fromBlock }, { tokenNetwork, partner })).toEqual({
-      type: channelMonitor.type,
-      payload: { id, fromBlock },
+  test('channelMonitored', () => {
+    const id = 12;
+    expect(channelMonitored({ id }, { tokenNetwork, partner })).toEqual({
+      type: channelMonitored.type,
+      payload: { id },
       meta: { tokenNetwork, partner },
     });
   });
@@ -222,4 +222,49 @@ describe('utils/actions', () => {
     // const reducer2 = reducer1.handle(decrement, s => s - 1); // forbidden, already handled
     // const reducer3 = sqrReducer.handle(noop, s => s); // forbidden, already handled
   });
+});
+
+test('ConfirmableAction', () => {
+  // a ConfirmableAction with BigNumber members
+  const action = {
+    type: channelDeposit.success.type,
+    payload: {
+      id: 17,
+      participant: '0x0000000000000000000000000000000000020001',
+      totalDeposit: '255',
+      txHash: '0x0000000000000000000000000000000000000020111111111111111111111111',
+      txBlock: 121,
+      // confirmed: undefined, // to test undefined property is filled
+    },
+    meta: {
+      tokenNetwork: '0x0000000000000000000000000000000000020001',
+      partner: '0x0000000000000000000000000000000000000020',
+    },
+  };
+  const decoded = decode(channelDeposit.success.codec, action);
+
+  // ensure actual action/codec validates above object
+  expect(channelDeposit.success.is(decoded)).toBe(true);
+  expect(channelDeposit.success.codec.is(decoded)).toBe(true);
+  expect(channelDeposit.success.codec.encode(decoded)).toEqual(action);
+
+  // ensure ConfirmableAction codec encodes/decodes exactly like the action codec
+  expect(ConfirmableAction.is(decoded)).toBe(true);
+  expect(decode(ConfirmableAction, action)).toEqual(decoded);
+  expect(ConfirmableAction.encode(decoded)).toEqual(action);
+
+  // ensure decoding<=>encoding roundtrips with just ConfirmableAction doesn't change object
+  expect(ConfirmableAction.encode(decode(ConfirmableAction, action))).toEqual(action);
+  expect(decode(ConfirmableAction, ConfirmableAction.encode(decoded))).toEqual(decoded);
+
+  // notice this is a valid 'ConfirmableAction' (per pure codec), but not a valid action of that
+  // type, and decoding must validate as false
+  const confirmable: ConfirmableAction = { type: decoded.type, payload: decoded.payload };
+  expect(() => decode(ConfirmableAction, confirmable)).toThrowError(/Invalid value.*\/meta:/);
+
+  // same, but with an unknown type
+  const confirmable2: ConfirmableAction = { type: 'unknown/action', payload: decoded.payload };
+  expect(() => decode(ConfirmableAction, confirmable2)).toThrowError(
+    /Invalid value.*ConfirmableAction/,
+  );
 });

@@ -1,11 +1,10 @@
-import { Zero, AddressZero, HashZero } from 'ethers/constants';
+import { Zero, AddressZero, One } from 'ethers/constants';
 
 import { UInt, Address, Hash } from '../utils/types';
-import { Reducer, createReducer, isActionOf } from '../utils/actions';
+import { Reducer, createReducer } from '../utils/actions';
 import { partialCombineReducers } from '../utils/redux';
 import { RaidenState, initialState } from '../state';
-import { SignatureZero } from '../constants';
-import { RaidenAction, ConfirmableActions } from '../actions';
+import { RaidenAction, ConfirmableAction } from '../actions';
 import { transferSecretRegister } from '../transfers/actions';
 import { Direction } from '../transfers/state';
 import {
@@ -20,6 +19,7 @@ import {
 } from './actions';
 import { Channel, ChannelState, ChannelEnd } from './state';
 import { channelKey, channelUniqueKey } from './utils';
+import { BalanceProofZero, Lock } from './types';
 
 // state.blockNumber specific reducer, handles only newBlock action
 const blockNumber = createReducer(initialState.blockNumber).handle(
@@ -30,22 +30,27 @@ const blockNumber = createReducer(initialState.blockNumber).handle(
 // state.tokens specific reducer, handles only tokenMonitored action
 const tokens = createReducer(initialState.tokens).handle(
   tokenMonitored,
-  (state, { payload: { token, tokenNetwork } }) => ({ ...state, [token]: tokenNetwork }),
+  (state, { payload: { token, tokenNetwork } }) =>
+    state[token] === tokenNetwork ? state : { ...state, [token]: tokenNetwork },
 );
+
+function removeAction(pendingTxs: readonly ConfirmableAction[], action: ConfirmableAction) {
+  return pendingTxs.filter(
+    (a) => a.type !== action.type || action.payload.txHash !== a.payload.txHash,
+  );
+}
 
 const pendingTxs: Reducer<RaidenState['pendingTxs'], RaidenAction> = (
   state = initialState.pendingTxs,
   action: RaidenAction,
 ): RaidenState['pendingTxs'] => {
   // filter out non-ConfirmableActions's
-  if (!isActionOf(ConfirmableActions, action)) return state;
-  // if confirmed==undefined, add action to state
-  else if (action.payload.confirmed === undefined) return [...state, action];
+  if (!ConfirmableAction.is(action)) return state;
+  // if confirmed==undefined, deduplicate and add action to state
+  else if (action.payload.confirmed === undefined) return [...removeAction(state, action), action];
   // else (either confirmed or removed), remove from state
   else {
-    const newState = state.filter(
-      (a) => a.type !== action.type || action.payload.txHash !== a.payload.txHash,
-    );
+    const newState = removeAction(state, action);
     if (newState.length !== state.length) return newState;
     return state;
   }
@@ -56,17 +61,9 @@ const emptyChannelEnd: ChannelEnd = {
   deposit: Zero as UInt<32>,
   withdraw: Zero as UInt<32>,
   locks: [],
-  balanceProof: {
-    chainId: Zero as UInt<32>,
-    tokenNetworkAddress: AddressZero as Address,
-    channelId: Zero as UInt<32>,
-    nonce: Zero as UInt<8>,
-    transferredAmount: Zero as UInt<32>,
-    lockedAmount: Zero as UInt<32>,
-    locksroot: HashZero as Hash,
-    additionalHash: HashZero as Hash,
-    signature: SignatureZero,
-  },
+  balanceProof: BalanceProofZero,
+  pendingWithdraws: [],
+  nextNonce: One as UInt<8>,
 };
 
 function channelOpenSuccessReducer(state: RaidenState, action: channelOpen.success): RaidenState {
@@ -80,8 +77,9 @@ function channelOpenSuccessReducer(state: RaidenState, action: channelOpen.succe
   )
     return state;
   const channel: Channel = {
-    state: ChannelState.open,
+    _id: channelUniqueKey({ ...action.meta, id: action.payload.id }),
     id: action.payload.id,
+    state: ChannelState.open,
     token: action.payload.token,
     tokenNetwork: action.meta.tokenNetwork,
     settleTimeout: action.payload.settleTimeout,
@@ -109,10 +107,16 @@ function channelUpdateOnchainBalanceStateReducer(
   let channel = state.channels[key];
   if (channel?.state !== ChannelState.open || channel.id !== action.payload.id) return state;
 
-  const [prop, total] = channelWithdrawn.is(action)
-    ? ['withdraw' as const, action.payload.totalWithdraw]
-    : ['deposit' as const, action.payload.totalDeposit];
   const end = action.payload.participant === channel.partner.address ? 'partner' : 'own';
+  const [prop, total, pendingWithdraws] = channelWithdrawn.is(action)
+    ? [
+        'withdraw' as const,
+        action.payload.totalWithdraw,
+        channel[end].pendingWithdraws.filter((req) =>
+          req.total_withdraw.gt(action.payload.totalWithdraw),
+        ), // on-chain withdraw clears <= withdraw messages, including the confirmed one
+      ]
+    : ['deposit' as const, action.payload.totalDeposit, channel[end].pendingWithdraws];
 
   if (total.lte(channel[end][prop])) return state; // ignore if past event
 
@@ -121,6 +125,7 @@ function channelUpdateOnchainBalanceStateReducer(
     [end]: {
       ...channel[end],
       [prop]: total,
+      pendingWithdraws,
     },
   };
   return { ...state, channels: { ...state.channels, [key]: channel } };
@@ -198,43 +203,58 @@ function channelSettleSuccessReducer(
   return state;
 }
 
+/* Immutably mark locks as registed; returns reference to previous array if nothing changes */
+function markLocksAsRegistered(
+  locks: readonly Lock[],
+  secrethash: Hash,
+  registeredBlock: number,
+): readonly Lock[] {
+  let changed = false;
+  const newLocks = locks.map((lock) => {
+    if (lock.secrethash !== secrethash || lock.registered || lock.expiration.lte(registeredBlock))
+      return lock;
+    changed = true;
+    return { ...lock, registered: true as const };
+  });
+  if (changed) return newLocks;
+  return locks;
+}
+
 function channelLockRegisteredReducer(
   state: RaidenState,
   action: transferSecretRegister.success,
 ): RaidenState {
-  const secrethash = action.meta.secrethash;
-
   // now that secret is stored in transfer, if it's a confirmed on-chain registration,
   // also update channel's lock to reflect it
-  if (!action.payload.confirmed || !(secrethash in state[action.meta.direction])) return state;
-  const transf = state[action.meta.direction][secrethash].transfer[1];
-  const key = channelKey({
-    tokenNetwork: transf.token_network_address,
-    partner: state[action.meta.direction][secrethash].partner,
-  });
-  if (!(key in state.channels)) return state;
+  if (!action.payload.confirmed) return state;
 
   const end = action.meta.direction === Direction.SENT ? 'own' : 'partner';
-  const locks = state.channels[key][end].locks;
-  if (!locks.some((lock) => lock.secrethash === secrethash && !lock.registered)) return state;
-
-  return {
-    ...state,
-    channels: {
-      ...state.channels,
-      [key]: {
-        ...state.channels[key],
-        [end]: {
-          ...state.channels[key][end],
-          locks: locks.map((lock) =>
-            lock.secrethash === secrethash && !lock.registered
-              ? { ...lock, registered: true } // mark lock as registered
-              : lock,
-          ),
+  // iterate over channels and update any matching lock
+  const keys = [...Object.keys(state.channels)];
+  for (const key of keys) {
+    const channel = state.channels[key];
+    const newLocks = markLocksAsRegistered(
+      channel[end].locks,
+      action.meta.secrethash,
+      action.payload.txBlock,
+    );
+    if (newLocks === channel[end].locks) continue;
+    // only update state if locks changed
+    state = {
+      ...state,
+      channels: {
+        ...state.channels,
+        [key]: {
+          ...channel,
+          [end]: {
+            ...channel[end],
+            locks: newLocks,
+          },
         },
       },
-    },
-  };
+    };
+  }
+  return state;
 }
 
 // handles actions which reducers need RaidenState
@@ -255,7 +275,10 @@ const completeReducer = createReducer(initialState)
  * name of the reducer. channels root reducer instead must be handled the complete state instead,
  * so it compose the output with each key/nested/combined state.
  */
-const partialReducer = partialCombineReducers({ blockNumber, tokens, pendingTxs }, initialState);
+const partialReducer = partialCombineReducers<RaidenState, RaidenAction>(
+  { blockNumber, tokens, pendingTxs },
+  initialState,
+);
 /**
  * channelsReducer is a reduce-reducers like reducer; in contract with combineReducers, which
  * gives just a specific slice of the state to the reducer (like blockNumber above, which receives

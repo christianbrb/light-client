@@ -5,11 +5,12 @@ import { Network } from 'ethers/utils';
 
 export type Tokens = { [token: string]: Token };
 export type Transfers = { [key: string]: RaidenTransfer };
-export type ChannelAction = 'close' | 'deposit' | 'settle';
+export type ChannelAction = 'close' | 'deposit' | 'withdraw' | 'settle';
 export type Settings = { [setting: string]: boolean | number | string };
 
 export interface RootState {
   loading: boolean;
+  blockNumber: number;
   defaultAccount: string;
   accountBalance: string;
   raidenAccountBalance: string;
@@ -17,12 +18,16 @@ export interface RootState {
   accessDenied: DeniedReason;
   channels: RaidenChannels;
   tokens: Tokens;
+  tokenAddresses: string[];
   network: Network;
   presences: Presences;
   transfers: Transfers;
   stateBackup: string;
   settings: Settings;
   config: Partial<RaidenConfig>;
+  userDepositTokenAddress: string;
+  disclaimerAccepted: boolean;
+  persistDisclaimerAcceptance: boolean;
 }
 
 declare global {

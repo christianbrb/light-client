@@ -10,7 +10,7 @@ and what the requirements for a pull request are to be opened against Raiden Lig
 - [Creating an issue](#creating-an-issue)
   - [Request features](#request-features)
   - [Report bugs](#report-bugs)
-- [Creating a rull request](#creating-a-pull-request)
+- [Creating a pull request](#creating-a-pull-request)
   - [Installation](#installation)
   - [Code style](#code-style)
     - [Observables](#observables)
@@ -78,6 +78,18 @@ $ git clone --recurse-submodules https://github.com/raiden-network/light-client.
 $ cd light-client
 ```
 
+Afterwards install `pnpm` if you haven't already:
+
+```bash
+$ npm i -g pnpm
+```
+
+Finally, you can install the required dependencies:
+
+```bash
+$ pnpm install
+```
+
 ### Code style
 
 The code style is enforced by [ESLint](https://eslint.org), which means that in most cases you don't need to do anything other than running:
@@ -140,21 +152,21 @@ in favor of unit tests whenever possible.
 For the sdk you have to run the following:
 
 ```bash
-$ cd raiden-ts
-$ npm run test
+$ pnpm run test --filter raiden-ts
 ```
 
 For the dApp:
 
 ```bash
-$ cd raiden-dapp
-$ npm run test:unit
+$ pnpm run test:unit --filter raiden-dapp
 ```
 
-Tests are split in unit tests, and integration tests. The first are faster to execute while
+Tests are split in unit, integration and end-to-end tests. The first are faster to execute while
 the latter test the whole system but are slower to run.
 
-By default whenever you make a Pull Request the linter tests, format checks, unit tests and all the integration tests will run.
+By default whenever you make a Pull Request the linter tests, format checks, as
+well as all functional tests (i.e. unit, integration and end-to-end tests) will
+run.
 
 ### Documentation
 

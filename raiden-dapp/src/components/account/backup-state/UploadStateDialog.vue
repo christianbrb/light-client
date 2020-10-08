@@ -9,14 +9,7 @@
     </v-card-text>
 
     <v-card-actions v-else-if="uploadingStateProgress">
-      <v-row justify="center" no-gutters>
-        <v-progress-circular
-          class="upload-state__progress"
-          :size="110"
-          :width="7"
-          indeterminate
-        ></v-progress-circular>
-      </v-row>
+      <spinner />
     </v-card-actions>
 
     <v-card-actions v-else>
@@ -32,7 +25,7 @@
           <v-icon
             class="upload-state__dropzone__icon--inactive-dropzone"
             :class="{
-              'upload-state__dropzone__icon--active-dropzone': activeDropzone
+              'upload-state__dropzone__icon--active-dropzone': activeDropzone,
             }"
             size="90px"
           >
@@ -68,21 +61,30 @@
 </template>
 
 <script lang="ts">
-import { Component, Prop, Emit, Vue } from 'vue-property-decorator';
+import { Component, Prop, Emit, Mixins } from 'vue-property-decorator';
 import RaidenDialog from '@/components/dialogs/RaidenDialog.vue';
+import { mapState } from 'vuex';
 import ActionButton from '@/components/ActionButton.vue';
+import Spinner from '@/components/icons/Spinner.vue';
+import { Settings } from '@/types';
+import NavigationMixin from '../../../mixins/navigation-mixin';
 
 @Component({
   components: {
     RaidenDialog,
-    ActionButton
-  }
+    ActionButton,
+    Spinner,
+  },
+  computed: {
+    ...mapState(['settings']),
+  },
 })
-export default class UploadStateDialog extends Vue {
+export default class UploadStateDialog extends Mixins(NavigationMixin) {
   dragCount: number = 0;
   activeDropzone: boolean = false;
   dropzoneErrorMessage: boolean = false;
   uploadingStateProgress: boolean = false;
+  settings!: Settings;
 
   @Prop({ required: true, type: Boolean, default: false })
   visible!: boolean;
@@ -141,8 +143,9 @@ export default class UploadStateDialog extends Vue {
     }
 
     let reader = new FileReader();
+
     /* istanbul ignore next */
-    reader.onload = e => {
+    reader.onload = (e) => {
       const target = e.target;
       if (!e.target) {
         return;
@@ -150,12 +153,12 @@ export default class UploadStateDialog extends Vue {
 
       try {
         this.uploadingStateProgress = true;
-        const retrievedState = target!.result;
-        JSON.parse(String(retrievedState));
+        const retrievedState = JSON.parse(String(target!.result));
         this.$store.commit('backupState', retrievedState);
-        setTimeout(() => {
+        setTimeout(async () => {
           this.uploadingStateProgress = false;
           this.cancel();
+          this.connectAndRedirect(retrievedState);
         }, 1000);
       } catch (err) {
         this.dropzoneError();
@@ -163,11 +166,23 @@ export default class UploadStateDialog extends Vue {
     };
     reader.readAsText(uploadedFile[0]);
   }
+
+  async connectAndRedirect(retrievedState: string) {
+    let { useRaidenAccount } = this.settings;
+
+    /* istanbul ignore next */
+    await this.$raiden.connect(
+      retrievedState,
+      useRaidenAccount ? true : undefined
+    );
+
+    this.navigateToHome();
+  }
 }
 </script>
 
 <style lang="scss" scoped>
-@import '../../../scss/colors';
+@import '@/scss/colors';
 
 .upload-state {
   &__error {
@@ -177,9 +192,6 @@ export default class UploadStateDialog extends Vue {
     height: 307px;
   }
 
-  &__progress {
-    color: $secondary-color;
-  }
   &__dropzone {
     border: dashed 2px $secondary-button-color;
     display: flex;

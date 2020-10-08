@@ -15,7 +15,7 @@
         :class="{
           sticky: sticky,
           'action-button__button--ghost': ghost,
-          'action-button__button--full-width': fullWidth
+          'action-button__button--full-width': fullWidth,
         }"
         depressed
         large
@@ -58,8 +58,8 @@ export default class ActionButton extends Vue {
 }
 </script>
 <style lang="scss" scoped>
-@import '../scss/colors';
-@import '../scss/mixins';
+@import '@/scss/colors';
+@import '@/scss/mixins';
 
 ::v-deep {
   .v-btn {

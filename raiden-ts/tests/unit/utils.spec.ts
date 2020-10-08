@@ -1,24 +1,13 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { makeLog, makeRaiden, waitBlock, makeAddress } from './mocks';
-import { token, tokenNetwork } from './fixtures';
 
 import * as t from 'io-ts';
 import { fold, isRight } from 'fp-ts/lib/Either';
 import { pipe } from 'fp-ts/lib/pipeable';
-import { isError } from 'util';
-import { of } from 'rxjs';
 import { first } from 'rxjs/operators';
 
-import { Event } from 'ethers/contract';
 import { BigNumber, bigNumberify, keccak256, hexDataLength } from 'ethers/utils';
-import { LosslessNumber } from 'lossless-json';
 
-import {
-  fromEthersEvent,
-  getEventsStream,
-  patchSignSend,
-  getNetworkName,
-} from 'raiden-ts/utils/ethers';
+import { fromEthersEvent, patchSignSend, getNetworkName } from 'raiden-ts/utils/ethers';
 import {
   Address,
   BigNumberC,
@@ -31,9 +20,10 @@ import {
 } from 'raiden-ts/utils/types';
 import { RaidenError, ErrorCodec, ErrorCodes } from 'raiden-ts/utils/error';
 import { LruCache } from 'raiden-ts/utils/lru';
-import { encode, losslessParse, losslessStringify } from 'raiden-ts/utils/data';
+import { encode } from 'raiden-ts/utils/data';
 import { getLocksroot, makeSecret, getSecrethash } from 'raiden-ts/transfers/utils';
 import { Lock } from 'raiden-ts/channels';
+import { LocksrootZero } from 'raiden-ts/constants';
 
 const { JsonRpcProvider } = jest.requireActual('ethers/providers');
 
@@ -51,108 +41,6 @@ test('fromEthersEvent', async () => {
   expect(blockNumber).toBe(1337);
   expect(onSpy).toHaveBeenCalledTimes(1);
   expect(removeListenerSpy).toHaveBeenCalledTimes(1);
-});
-
-describe('getEventsStream', () => {
-  type TokenNetworkCreatedEvent = [string, string, Event];
-
-  test('newEvents$ only', async () => {
-    expect.assertions(4);
-    const raiden = await makeRaiden();
-    const { provider, registryContract } = raiden.deps;
-    const filter = registryContract.filters.TokenNetworkCreated(null, null);
-
-    const output: TokenNetworkCreatedEvent[] = [];
-    const sub = getEventsStream<TokenNetworkCreatedEvent>(registryContract, [
-      filter,
-    ]).subscribe((e) => output.push(e));
-
-    const log = makeLog({
-      filter: registryContract.filters.TokenNetworkCreated(token, tokenNetwork),
-    });
-    provider.emit(filter, log);
-
-    await waitBlock();
-
-    expect(output).toHaveLength(1);
-    const event = output[0];
-    expect(event[0]).toBe(token);
-    expect(event[1]).toBe(tokenNetwork);
-    expect(event[2]).toMatchObject({
-      address: registryContract.address,
-      blockNumber: 1337,
-      args: { '0': token, '1': tokenNetwork, length: 2 },
-    });
-
-    sub.unsubscribe();
-  });
-
-  test('pastEvents$ and newEvents$', async () => {
-    expect.assertions(10);
-    const raiden = await makeRaiden();
-    const { provider, registryContract } = raiden.deps;
-    const filter = registryContract.filters.TokenNetworkCreated(null, null);
-
-    const pastToken = makeAddress();
-    const pastTokenNetwork = makeAddress();
-
-    const pastLog = makeLog({
-      blockNumber: 999,
-      filter: registryContract.filters.TokenNetworkCreated(pastToken, pastTokenNetwork),
-    });
-
-    // ensure getEventsStream will need to wait for next block
-    provider.resetEventsBlock(0);
-    provider.getLogs.mockResolvedValueOnce([pastLog]);
-
-    const output: TokenNetworkCreatedEvent[] = [];
-    const sub = getEventsStream<TokenNetworkCreatedEvent>(
-      registryContract,
-      [filter],
-      of(1),
-    ).subscribe((e) => output.push(e));
-
-    await waitBlock();
-    await waitBlock(1336);
-
-    const log = makeLog({
-      filter: registryContract.filters.TokenNetworkCreated(token, tokenNetwork),
-    });
-    provider.emit(filter, log);
-
-    await waitBlock();
-
-    expect(output).toHaveLength(2);
-
-    expect(output[1][0]).toBe(token);
-    expect(output[1][1]).toBe(tokenNetwork);
-    expect(output[1][2]).toMatchObject({
-      address: registryContract.address,
-      blockNumber: 1337,
-      args: { '0': token, '1': tokenNetwork, length: 2 },
-    });
-
-    expect(output[0][0]).toBe(pastToken);
-    expect(output[0][1]).toBe(pastTokenNetwork);
-
-    const pastEvent = output[0][2];
-    expect(pastEvent).toMatchObject({
-      address: registryContract.address,
-      blockNumber: 999,
-      args: { '0': pastToken, '1': pastTokenNetwork, length: 2 },
-    });
-    pastEvent.removeListener();
-
-    pastEvent.getBlock();
-    pastEvent.getTransaction();
-    pastEvent.getTransactionReceipt();
-
-    expect(provider.getBlock).toHaveBeenCalledWith(pastLog.blockHash);
-    expect(provider.getTransaction).toHaveBeenCalledWith(pastLog.transactionHash);
-    expect(provider.getTransactionReceipt).toHaveBeenCalledWith(pastLog.transactionHash);
-
-    sub.unsubscribe();
-  });
 });
 
 test('patchSignSend', async () => {
@@ -243,8 +131,6 @@ describe('types', () => {
     const address = '0x000000000000000000000000000000000004000A',
       address2 = '0x00000000000000000000000000000000000300Aa';
 
-    const hexCodec = HexString(20);
-    const hexPred = jest.spyOn(hexCodec, 'is');
     const addrPred = jest.spyOn(Address, 'is');
 
     expect(Address.is(address)).toBe(true);
@@ -260,7 +146,6 @@ describe('types', () => {
     expect(address2decoded).not.toEqual(address2.toLowerCase());
 
     expect(addrPred).toHaveBeenCalledTimes(4);
-    expect(hexPred).toHaveBeenCalledTimes(5); // 'parent' codec was also checked, +1 for decode
 
     // narrow address to Address below
     if (!Address.is(address)) throw new Error('not an address');
@@ -277,13 +162,13 @@ describe('types', () => {
   });
 
   test('Timed', () => {
-    const TimedAddress = Timed(Address);
+    const TimedAddress = Timed(t.type({ address: Address }));
     type TimedAddress = t.TypeOf<typeof TimedAddress>;
 
     const address = '0x000000000000000000000000000000000004000A' as Address,
-      data: TimedAddress = timed(address);
+      data: TimedAddress = timed({ address });
     expect(TimedAddress.is(data)).toBe(true);
-    expect(TimedAddress.is(['invalid number', address])).toBe(false);
+    expect(TimedAddress.is({ address, ts: 'invalid number' })).toBe(false);
   });
 
   test('ErrorCodec', () => {
@@ -340,22 +225,11 @@ describe('data', () => {
 
     expect(() => encode(-1, 2)).toThrowError('negative');
     expect(() => encode(bigNumberify(65537), 2)).toThrowError('too large');
-    expect(() => encode('0x01', 2)).toThrowError(ErrorCodes.DTA_ARRAY_LENGTH_DIFFRENCE);
+    expect(() => encode('0x01', 2)).toThrowError(ErrorCodes.DTA_ARRAY_LENGTH_DIFFERENCE);
     // @ts-expect-error
     expect(() => encode(null, 2)).toThrowError(
       'Passed data is not a HEX string nor integer array',
     );
-  });
-
-  test('losslessParse', () => {
-    const parsed = losslessParse('{"big":18446744073709551616,"small":65535 }');
-    expect(parsed.big).toEqual(bigNumberify('18446744073709551616'));
-    expect(parsed.small).toBe(65535);
-  });
-
-  test('losslessStringify', () => {
-    const stringified = losslessStringify({ n: new LosslessNumber('18446744073709551616') });
-    expect(stringified).toBe('{"n":18446744073709551616}');
   });
 });
 
@@ -364,6 +238,7 @@ describe('messages', () => {
     expect(getLocksroot([])).toBe(
       '0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470',
     );
+    expect(getLocksroot([])).toBe(LocksrootZero);
     const locks: Lock[] = [
       {
         amount: bigNumberify(1) as UInt<32>,
@@ -402,7 +277,7 @@ describe('RaidenError', () => {
       throw new RaidenError(ErrorCodes.PFS_DISABLED);
     } catch (err) {
       expect(err).toBeInstanceOf(RaidenError);
-      expect(isError(err)).toBeTruthy();
+      expect(err instanceof Error).toBeTruthy();
       expect(err.name).toEqual('RaidenError');
     }
   });

@@ -1,6 +1,7 @@
 import RaidenDialog from '@/components/dialogs/RaidenDialog.vue';
 
 jest.mock('@/services/raiden-service');
+jest.mock('@/i18n', () => jest.fn());
 
 import { mount, Wrapper } from '@vue/test-utils';
 import Vue from 'vue';
@@ -27,8 +28,8 @@ describe('Withdrawal.vue', () => {
       mocks: {
         $identicon: $identicon(),
         $t: (msg: string) => msg,
-        $raiden
-      }
+        $raiden,
+      },
     });
   }
 
@@ -41,10 +42,6 @@ describe('Withdrawal.vue', () => {
     beforeEach(() => {
       $raiden.getRaidenAccountBalances.mockResolvedValue([]);
       wrapper = createWrapper();
-    });
-
-    test('render component', () => {
-      expect(wrapper.is(Withdrawal)).toBe(true);
     });
 
     test('show an empty screen', () => {
@@ -60,53 +57,42 @@ describe('Withdrawal.vue', () => {
           decimals: 5,
           balance: parseUnits('1.2', 5),
           name: 'TestToken',
-          symbol: 'TTT'
-        }
+          symbol: 'TTT',
+        },
       ]);
       wrapper = createWrapper();
     });
 
     test('open a dialog when clicking withdraw for a token', async () => {
-      wrapper
-        .find('.withdrawal__tokens')
-        .find('button')
-        .trigger('click');
+      wrapper.find('.withdrawal__tokens').find('button').trigger('click');
 
       await wrapper.vm.$nextTick();
 
-      expect(wrapper.find(RaidenDialog).exists()).toBe(true);
+      expect(wrapper.findComponent(RaidenDialog).exists()).toBe(true);
     });
 
     test('disables withdrawal if the Raiden account has no funds', async () => {
-      wrapper
-        .find('.withdrawal__tokens')
-        .find('button')
-        .trigger('click');
+      wrapper.find('.withdrawal__tokens').find('button').trigger('click');
 
       await wrapper.vm.$nextTick();
 
       expect(
-        wrapper
-          .find('.withdrawal-dialog__action')
-          .find('button')
-          .attributes()['disabled']
+        wrapper.find('.withdrawal-dialog__action').find('button').attributes()[
+          'disabled'
+        ]
       ).toBe('disabled');
     });
 
     test('withdraws tokens when the user clicks on the action button', async () => {
       store.commit('raidenAccountBalance', parseEther('1.2'));
-      wrapper
-        .find('.withdrawal__tokens')
-        .find('button')
-        .trigger('click');
+      wrapper.find('.withdrawal__tokens').find('button').trigger('click');
 
       await wrapper.vm.$nextTick();
 
       expect(
-        wrapper
-          .find('.withdrawal-dialog__action')
-          .find('button')
-          .attributes()['disabled']
+        wrapper.find('.withdrawal-dialog__action').find('button').attributes()[
+          'disabled'
+        ]
       ).toBeUndefined();
 
       wrapper

@@ -1,4 +1,4 @@
-import { Observable, from, of, combineLatest } from 'rxjs';
+import { Observable, from, of, combineLatest, using, throwError } from 'rxjs';
 import {
   catchError,
   filter,
@@ -14,7 +14,6 @@ import {
 import { MaxUint256 } from 'ethers/constants';
 import negate from 'lodash/negate';
 import unset from 'lodash/fp/unset';
-import isEmpty from 'lodash/isEmpty';
 import isEqual from 'lodash/isEqual';
 
 import { RaidenState } from './state';
@@ -25,10 +24,11 @@ import { Capabilities } from './constants';
 import { pluckDistinct } from './utils/rx';
 import { getPresences$ } from './transport/utils';
 import { rtcChannel } from './transport/actions';
-import { pfsListUpdated, udcDeposited } from './services/actions';
+import { pfsListUpdated, udcDeposit } from './services/actions';
 import { Address, UInt } from './utils/types';
 import { isActionOf } from './utils/actions';
 
+import * as DatabaseEpics from './db/epics';
 import * as ChannelsEpics from './channels/epics';
 import * as TransportEpics from './transport/epics';
 import * as TransfersEpics from './transfers/epics';
@@ -51,9 +51,7 @@ function getConfig$(
             ? userConfig.caps
             : {
                 [Capabilities.NO_RECEIVE]: !(
-                  config.monitoringReward?.gt(0) &&
-                  config.monitoringReward.lte(udcBalance) &&
-                  !isEmpty(config.rateToSvt)
+                  config.monitoringReward?.gt(0) && config.monitoringReward.lte(udcBalance)
                 ),
                 ...config.caps, // default and user config overwrite runtime caps above
               };
@@ -69,19 +67,21 @@ function getConfig$(
  *
  * @param action$ - Observable of RaidenActions
  * @param state$ - Observable of RaidenStates
- * @param opts - Options
- * @param opts.defaultConfig - defaultConfig mapping
+ * @param deps - Epics dependencies, minus 'latest$' & 'config$' (outputs)
+ * @param deps.defaultConfig - defaultConfig mapping
+ * @param deps.log - Logger instance
+ * @param deps.provider - Provider instance
  * @returns latest$ observable
  */
 export function getLatest$(
   action$: Observable<RaidenAction>,
   state$: Observable<RaidenState>,
   // do not use latest$ or dependents (e.g. config$), as they're defined here
-  { defaultConfig }: Pick<RaidenEpicDeps, 'defaultConfig'>,
+  { defaultConfig, log, provider }: Pick<RaidenEpicDeps, 'defaultConfig' | 'log' | 'provider'>,
 ): Observable<Latest> {
   const udcBalance$ = action$.pipe(
-    filter(udcDeposited.is),
-    pluck('payload'),
+    filter(udcDeposit.success.is),
+    pluck('meta', 'totalDeposit'),
     // starts with max, to prevent receiving starting as disabled before actual balance is fetched
     startWith(MaxUint256 as UInt<32>),
   );
@@ -102,24 +102,43 @@ export function getLatest$(
     ),
     startWith({} as Latest['rtc']),
   );
-  // the nested combineLatest is needed because it can only infer the type of 6 params
-  return combineLatest([
-    combineLatest([action$, state$, config$, presences$, pfsList$, rtc$]),
-    combineLatest([udcBalance$]),
-  ]).pipe(
-    map(([[action, state, config, presences, pfsList, rtc], [udcBalance]]) => ({
-      action,
-      state,
-      config,
-      presences,
-      pfsList,
-      rtc,
-      udcBalance,
-    })),
+
+  return using(
+    // using will ensure these subscriptions only happen at output's subscription time
+    // and are properly teared down upon output's unsubscribe, complete or error
+    // subscription.add will add child subscriptions to teardown when parent does
+    () => {
+      const sub = config$
+        .pipe(pluckDistinct('logger'))
+        .subscribe((logger) => log.setLevel(logger || 'silent', false));
+      sub.add(
+        config$
+          .pipe(pluckDistinct('pollingInterval'))
+          .subscribe((pollingInterval) => (provider.pollingInterval = pollingInterval)),
+      );
+      return sub;
+    },
+    () =>
+      // the nested combineLatest is needed because it can only infer the type of 6 params
+      combineLatest([
+        combineLatest([action$, state$, config$, presences$, pfsList$, rtc$]),
+        combineLatest([udcBalance$]),
+      ]).pipe(
+        map(([[action, state, config, presences, pfsList, rtc], [udcBalance]]) => ({
+          action,
+          state,
+          config,
+          presences,
+          pfsList,
+          rtc,
+          udcBalance,
+        })),
+      ),
   );
 }
 
 const RaidenEpics = {
+  ...DatabaseEpics,
   ...ChannelsEpics,
   ...TransportEpics,
   ...TransfersEpics,
@@ -140,16 +159,22 @@ export const raidenRootEpic = (
     // states pipeline, but ends when shutdownNotification emits
     limitedState$ = state$.pipe(takeUntil(shutdownNotification));
 
-  // wire deps.latest$
-  getLatest$(limitedAction$, limitedState$, deps).subscribe(deps.latest$);
-
-  // like combineEpics, but completes action$, state$ & output$ when a raidenShutdown goes through
-  return from(Object.values(RaidenEpics)).pipe(
-    mergeMap((epic) => epic(limitedAction$, limitedState$, deps)),
-    catchError((err) => {
-      deps.log.error('Fatal error:', err);
-      return of(raidenShutdown({ reason: err }));
-    }),
-    takeUntil(shutdownNotification),
+  return using(
+    // wire deps.latest$ when observableFactory below gets subscribed, and tears down on complete
+    () => getLatest$(limitedAction$, limitedState$, deps).subscribe(deps.latest$),
+    () =>
+      // like combineEpics, but completes action$, state$ & output$ when a raidenShutdown goes through
+      from(Object.values(RaidenEpics)).pipe(
+        mergeMap((epic) =>
+          epic(limitedAction$, limitedState$, deps).pipe(
+            catchError((err) => {
+              deps.log.error('Epic error', epic, err);
+              return throwError(err);
+            }),
+          ),
+        ),
+        catchError((err) => of(raidenShutdown({ reason: err }))),
+        takeUntil(shutdownNotification),
+      ),
   );
 };

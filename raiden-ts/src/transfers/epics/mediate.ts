@@ -5,10 +5,19 @@ import { filter, map, withLatestFrom } from 'rxjs/operators';
 import { Capabilities } from '../../constants';
 import { RaidenAction } from '../../actions';
 import { RaidenState } from '../../state';
+import { RaidenConfig } from '../../config';
 import { RaidenEpicDeps } from '../../types';
-import { Int } from '../../utils/types';
+import { Address, Int } from '../../utils/types';
 import { transfer, transferSigned } from '../actions';
 import { Direction } from '../state';
+
+function shouldMediate(action: transferSigned, address: Address, { caps }: RaidenConfig): boolean {
+  const isMediationEnabled = !caps?.[Capabilities.NO_MEDIATE];
+  const isntTarget =
+    action.meta.direction === Direction.RECEIVED && action.payload.message.target !== address;
+
+  return isMediationEnabled && isntTarget;
+}
 
 /**
  * When receiving a transfer not targeting us, create an outgoing transfer to target
@@ -28,24 +37,15 @@ import { Direction } from '../state';
  */
 export const transferMediateEpic = (
   action$: Observable<RaidenAction>,
-  state$: Observable<RaidenState>,
+  {}: Observable<RaidenState>,
   { address, config$ }: RaidenEpicDeps,
 ) =>
   action$.pipe(
     filter(transferSigned.is),
-    // filter for received transfers not to us
-    filter(
-      (action) =>
-        action.meta.direction === Direction.RECEIVED && action.payload.message.target !== address,
-    ),
-    withLatestFrom(state$, config$),
-    // filter when mediating is enabled and outgoing transfer isn't set
-    filter(
-      ([action, { sent }, { caps }]) =>
-        !caps?.[Capabilities.NO_MEDIATE] && !(action.meta.secrethash in sent),
-    ),
+    withLatestFrom(config$),
+    filter(([action, config]) => shouldMediate(action, address, config)),
     map(([{ payload: { message: transf }, meta: { secrethash } }]) =>
-      // request an outbound transfer to target
+      // request an outbound transfer to target; will fail if already sent
       transfer.request(
         {
           tokenNetwork: transf.token_network_address,

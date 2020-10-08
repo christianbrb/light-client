@@ -11,12 +11,14 @@ import { TokenNetwork } from './contracts/TokenNetwork';
 import { HumanStandardToken } from './contracts/HumanStandardToken';
 import { UserDeposit } from './contracts/UserDeposit';
 import { SecretRegistry } from './contracts/SecretRegistry';
+import { MonitoringService } from './contracts/MonitoringService';
 
 import { RaidenAction } from './actions';
 import { RaidenState } from './state';
 import { Address, UInt } from './utils/types';
 import { RaidenConfig } from './config';
 import { Presences } from './transport/types';
+import { RaidenDatabase } from './db/types';
 
 interface Info {
   address: Address;
@@ -29,6 +31,7 @@ export interface ContractsInfo {
   UserDeposit: Info;
   SecretRegistry: Info;
   MonitoringService: Info;
+  OneToN: Info;
 }
 
 export interface Latest {
@@ -58,7 +61,9 @@ export interface RaidenEpicDeps {
   serviceRegistryContract: ServiceRegistry;
   userDepositContract: UserDeposit;
   secretRegistryContract: SecretRegistry;
+  monitoringServiceContract: MonitoringService;
   main?: { signer: Signer; address: Address };
+  db: RaidenDatabase;
 }
 
 export interface ChangeEvent<T extends string, P> {

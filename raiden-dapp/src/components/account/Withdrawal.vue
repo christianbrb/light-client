@@ -7,19 +7,8 @@
         </div>
       </v-col>
     </v-row>
-    <v-row
-      v-if="loading"
-      no-gutters
-      align="center"
-      justify="center"
-      class="withdrawal__loading"
-    >
-      <v-progress-circular
-        :size="125"
-        :width="4"
-        color="primary"
-        indeterminate
-      ></v-progress-circular>
+    <v-row v-if="loading" class="withdrawal__loading">
+      <spinner />
     </v-row>
     <v-row
       v-else-if="balances.length === 0"
@@ -29,7 +18,13 @@
     >
       <v-col cols="auto">
         <v-row align="center" justify="center">
-          <v-icon color="primary" size="160">info_outline</v-icon>
+          <div>
+            <v-img
+              height="150px"
+              width="150px"
+              :src="require('@/assets/info.svg')"
+            ></v-img>
+          </div>
         </v-row>
         <v-row>
           <v-col cols="auto">{{ $t('withdrawal.no-tokens') }}</v-col>
@@ -101,12 +96,7 @@
           </div>
         </div>
         <div v-else class="mt-4">
-          <v-progress-circular
-            :size="86"
-            :width="4"
-            color="primary"
-            indeterminate
-          ></v-progress-circular>
+          <spinner />
           <div class="mt-4">{{ $t('withdrawal.dialog.progress') }}</div>
         </div>
       </v-card-text>
@@ -133,12 +123,19 @@ import BlockieMixin from '@/mixins/blockie-mixin';
 import AmountDisplay from '@/components/AmountDisplay.vue';
 import ActionButton from '@/components/ActionButton.vue';
 import RaidenDialog from '@/components/dialogs/RaidenDialog.vue';
+import Spinner from '@/components/icons/Spinner.vue';
 
 @Component({
-  components: { ActionButton, RaidenDialog, AddressDisplay, AmountDisplay },
+  components: {
+    ActionButton,
+    RaidenDialog,
+    AddressDisplay,
+    AmountDisplay,
+    Spinner,
+  },
   computed: {
-    ...mapState(['tokens', 'raidenAccountBalance'])
-  }
+    ...mapState(['tokens', 'raidenAccountBalance']),
+  },
 })
 export default class Withdrawal extends Mixins(BlockieMixin) {
   tokens!: Tokens;
@@ -161,7 +158,9 @@ export default class Withdrawal extends Mixins(BlockieMixin) {
       this.withdrawing = true;
       const { address, balance } = this.withdraw;
       await this.$raiden.transferOnChainTokens(address, balance);
-      this.balances = this.balances.filter(token => token.address !== address);
+      this.balances = this.balances.filter(
+        (token) => token.address !== address
+      );
       this.withdraw = null;
     } catch (e) {
     } finally {

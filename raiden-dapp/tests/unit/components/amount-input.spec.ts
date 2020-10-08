@@ -20,11 +20,16 @@ describe('AmountInput.vue', () => {
         label: 'Has Label',
         token: TestData.token,
         value: '0.00',
-        ...params
+        ...params,
       },
       mocks: {
-        $t: (msg: string) => msg
-      }
+        $t: (msg: string) => msg,
+      },
+      listeners: {
+        input: ($event: string) => {
+          wrapper.setProps({ value: $event });
+        },
+      },
     });
   }
 
@@ -40,18 +45,6 @@ describe('AmountInput.vue', () => {
       expect(messages.exists()).toBe(false);
     });
 
-    test('show an error message when the input is empty', async () => {
-      mockInput(wrapper, '');
-      await wrapper.vm.$nextTick();
-      await flushPromises();
-      const inputEvent = wrapper.emitted('input');
-      expect(inputEvent).toBeTruthy();
-      expect(inputEvent?.shift()).toEqual(['']);
-      const messages = wrapper.find('.v-messages__message');
-      expect(messages.exists()).toBe(true);
-      expect(messages.text()).toEqual('amount-input.error.empty');
-    });
-
     test('show no error if the input is valid', async () => {
       mockInput(wrapper, '1.2');
       await wrapper.vm.$nextTick();
@@ -64,8 +57,9 @@ describe('AmountInput.vue', () => {
   });
 
   describe('limited', () => {
-    beforeEach(() => {
-      wrapper = createWrapper({ limit: true, value: '' });
+    beforeEach(async () => {
+      wrapper = createWrapper({ limit: true, value: '0.00' });
+      await wrapper.vm.$nextTick();
     });
 
     test('show an error if the amount is smaller than the limit', async () => {
@@ -95,9 +89,9 @@ describe('AmountInput.vue', () => {
     test('call preventDefault when pasting an invalid value', () => {
       const event = {
         clipboardData: {
-          getData: jest.fn().mockReturnValue('invalid')
+          getData: jest.fn().mockReturnValue('invalid'),
         },
-        preventDefault: jest.fn().mockReturnValue(null)
+        preventDefault: jest.fn().mockReturnValue(null),
       };
       // @ts-ignore
       wrapper.vm.onPaste(event);
@@ -108,13 +102,13 @@ describe('AmountInput.vue', () => {
     test('select the previous value when pasting a valid value', () => {
       const event = {
         clipboardData: {
-          getData: jest.fn().mockReturnValue('1.2')
+          getData: jest.fn().mockReturnValue('1.2'),
         },
         target: {
           value: '1.2',
-          setSelectionRange: jest.fn().mockReturnValue(null)
+          setSelectionRange: jest.fn().mockReturnValue(null),
         },
-        preventDefault: jest.fn().mockReturnValue(null)
+        preventDefault: jest.fn().mockReturnValue(null),
       };
       // @ts-ignore
       wrapper.vm.onPaste(event);

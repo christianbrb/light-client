@@ -1,325 +1,301 @@
-// imports
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { Server } from 'http';
-
 import inquirer from 'inquirer';
-import yargs from 'yargs';
-import { first } from 'rxjs/operators';
+import yargs from 'yargs/yargs';
 import { LocalStorage } from 'node-localstorage';
 import { Wallet } from 'ethers';
-import { BigNumberish, parseEther } from 'ethers/utils';
-import express, { Express } from 'express';
-import logging from 'loglevel';
+import { getAddress } from 'ethers/utils';
+import { Raiden, Address, RaidenConfig, assert, UInt } from 'raiden-ts';
 
-import { Raiden, RaidenChannel, RaidenTransfer } from 'raiden-ts';
+import DISCLAIMER from './disclaimer.json';
+import DEFAULT_RAIDEN_CONFIG from './config.json';
+import { Cli } from './types';
+import { makeCli } from './cli';
+import { setupLoglevel } from './utils/logging';
 
-// global declarations
-let raiden: Raiden;
-let log: logging.Logger = logging;
-let app: Express;
-let server: Server;
-
-async function raidenGetChannel(token: string, partner: string) {
-  const channels = await raiden.channels$.pipe(first()).toPromise();
-  return channels?.[token]?.[partner];
-}
-
-async function raidenEnsureChannelIsFunded(
-  channel: RaidenChannel,
-  deposit: BigNumberish,
-  mint?: boolean,
-) {
-  const start = Date.now();
-  if (channel.ownDeposit.lt(deposit)) {
-    const amount = channel.ownDeposit.sub(deposit).mul(-1);
-    if (mint && (await raiden.getTokenBalance(channel.token)).lt(amount)) {
-      log.info('Minting:', amount.toString());
-      await raiden.mint(channel.token, amount);
-    }
-    const tx = await raiden.depositChannel(channel.token, channel.partner, amount);
-    log.warn('Channel deposited', tx, ', took', Date.now() - start);
-  } else {
-    log.info('Channel already funded:', channel.ownDeposit.toString());
-  }
-  return (await raidenGetChannel(channel.token, channel.partner)).ownDeposit.toString();
-}
-
-async function raidenEnsureChannelIsOpen(
-  token: string,
-  partner: string,
-  deposit?: BigNumberish,
-  mint?: boolean,
-) {
-  const start = Date.now();
-  let channel = await raidenGetChannel(token, partner);
-  if (!channel) {
-    if (deposit && mint && (await raiden.getTokenBalance(token)).lt(deposit)) {
-      log.info('Minting:', deposit.toString());
-      await raiden.mint(token, deposit);
-    }
-    // depositing on openChannel is faster
-    await raiden.openChannel(token, partner, { deposit });
-    channel = await raidenGetChannel(token, partner);
-    log.warn('Channel opened:', channel, ', took', Date.now() - start);
-  } else {
-    log.info('Channel already present:', channel);
-    // if channel already present, ensure it's funded
-    if (deposit) {
-      await raidenEnsureChannelIsFunded(channel, deposit, mint);
-    }
-  }
-  return channel;
-}
-
-async function raidenTransfer(
-  token: string,
-  target: string,
-  amount: BigNumberish,
-  opts: { identifier?: BigNumberish } = {},
-) {
-  let revealAt: number;
-  let unlockAt: number;
-  await raiden.getAvailability(target);
-  const { identifier: paymentId, ...rest } = opts;
-  const key = await raiden.transfer(token, target, amount, {
-    paymentId,
-    ...rest,
-  });
-
-  const transfer = await new Promise<RaidenTransfer>((resolve, reject) => {
-    const sub = raiden.transfers$.subscribe((t) => {
-      if (t.key !== key) return;
-      log.debug('Transfer:', t);
-      if (!revealAt && t.success !== undefined) revealAt = t.changedAt.getTime();
-      if (!unlockAt && t.status.startsWith('UNLOCK')) unlockAt = t.changedAt.getTime();
-      if (!t.completed) return;
-      else if (t.success) resolve(t);
-      else reject(t);
-      sub.unsubscribe();
-    });
-  });
-  log.warn(
-    'Transfer: took total =',
-    transfer.changedAt.getTime() - transfer.startedAt.getTime(),
-    ', reveal =',
-    revealAt! - transfer.startedAt.getTime(),
-    ', unlock =',
-    unlockAt! - transfer.startedAt.getTime(),
-  );
-  return transfer;
-}
-
-async function raidenInit({
-  token,
-  partner,
-  deposit,
-  mint,
-  transfer: value,
-  target,
-}: {
-  token?: string;
-  partner?: string;
-  deposit?: BigNumberish;
-  mint?: boolean;
-  transfer?: string;
-  target?: string;
-} = {}) {
-  const start = Date.now();
-  // wait started
-  await raiden.action$.pipe(first((a) => a.type === 'matrix/setup')).toPromise();
-  await raiden.events$.pipe(first((a) => a.type === 'block/new')).toPromise();
-  log.warn(
-    'Started: #',
-    await raiden.getBlockNumber(),
-    new Date(),
-    ', balance =',
-    (await raiden.getBalance()).toString(),
-    ', took',
-    Date.now() - start,
-  );
-
-  if (token) {
-    log.info('Token:', token, 'balance =', (await raiden.getTokenBalance(token)).toString());
-
-    if (partner) await raidenEnsureChannelIsOpen(token, partner, deposit, mint);
-
-    if (value && target) {
-      const availability = await raiden.getAvailability(target);
-      if (!availability.available) {
-        log.error('Target', target, 'not available:', availability);
-      } else {
-        await raidenTransfer(token, target, value);
-      }
-    }
-  }
-  const udcToken = await raiden.userDepositTokenAddress();
-  const amount = parseEther('10');
-  if ((await raiden.getTokenBalance(udcToken)).isZero()) {
-    await raiden.mint(udcToken, amount);
-    await raiden.depositToUDC(amount);
-  }
-  log.warn('Init: took', Date.now() - start);
-}
-
-async function setupApi(port: number) {
-  const api = '/api/v1';
-  app = express();
-  app.use(express.json());
-
-  app.get(`${api}/channels`, ({}, res) => {
-    raiden.channels$.pipe(first()).subscribe((c) => res.json(c));
-  });
-
-  app.get(`${api}/address`, ({}, res) => {
-    res.json({ our_address: raiden.address });
-  });
-
-  app.post(`${api}/payments/:token/:target`, (req, res) => {
-    raidenTransfer(req.params.token, req.params.target, req.body['amount'], req.body).then(
-      (tr) => res.json(tr),
-      (err) => res.status(400).json(err),
-    );
-  });
-
-  app.post(`${api}/config`, (req, res) => {
-    raiden.updateConfig(req.body);
-    res.json(raiden.config);
-  });
-
-  return new Promise<{ app: Express; server: Server }>(
-    (resolve) =>
-      (server = app.listen(port, () => {
-        log.info(`Serving Raiden LC API at http://localhost:${port}...`);
-        resolve({ app, server });
-      })),
-  );
-}
-
-async function main() {
-  logging.setLevel(logging.levels.DEBUG);
-  const argv = yargs
-    .usage('Usage: $0 -k <private_json_path> -e <node_url> --serve <port>')
+function parseArguments() {
+  const argv = yargs(process.argv.slice(2));
+  return argv
+    .usage('Usage: $0 [options]')
     .options({
-      privateKey: {
-        type: 'string',
-        demandOption: true,
-        alias: 'k',
-        desc: 'JSON Private Key file path',
-        coerce: path.resolve,
-      },
-      password: {
-        type: 'string',
-        desc:
-          'JSON Private Key password. Better passed through "RAIDEN_PASSWORD" env var. Prompted if not provided',
-      },
-      ethNode: {
-        alias: 'e',
-        type: 'string',
-        default: 'http://parity.goerli.ethnodes.brainbot.com:8545',
-        desc: 'ETH JSON-RPC URL',
-      },
-      store: {
-        alias: 's',
+      datadir: {
         type: 'string',
         default: './storage',
         desc: 'Dir path where to store state',
       },
-      config: {
-        alias: 'c',
-        coerce: JSON.parse,
-        desc: 'JSON to overwrite default/curretn config',
-      },
-      token: {
+      configFile: {
         type: 'string',
-        desc: 'Token address to operate on',
+        desc: 'JSON file path containing config object',
+        normalize: true,
       },
-      partner: {
+      keystorePath: {
         type: 'string',
-        desc: 'Open a channel with given partner',
-        implies: 'token',
+        default: './',
+        desc: 'Path for ethereum keystore directory',
+        normalize: true,
       },
-      deposit: {
+      address: {
         type: 'string',
-        desc: 'Deposit this value to channel with partner',
-        implies: 'partner',
+        desc: 'Address of private key to use',
+        check: Address.is,
       },
-      mint: {
-        alias: 'm',
+      passwordFile: {
+        type: 'string',
+        desc: 'Path for text file containing password for keystore file',
+        normalize: true,
+      },
+      userDepositContractAddress: {
+        type: 'string',
+        desc: "Address of UserDeposit contract to use as contract's entrypoint",
+        check: Address.is,
+      },
+      acceptDisclaimer: {
         type: 'boolean',
-        desc: 'Mint amount to deposit',
-        implies: 'deposit',
+        desc:
+          'By setting this parameter you confirm that you have read, understood and accepted the disclaimer and privacy warning.',
       },
-      transfer: {
-        type: 'string',
-        desc: 'Transfer this amount to target',
-        implies: 'token',
-      },
-      target: {
-        type: 'string',
-        desc: 'Transfer to this address',
-        implies: 'transfer',
-      },
-      serve: {
+      blockchainQueryInterval: {
         type: 'number',
-        desc: 'Serve HTTP API on given port',
+        default: 5,
+        desc: 'Time interval after which to check for new blocks (in seconds)',
+      },
+      defaultRevealTimeout: {
+        type: 'number',
+        default: 50,
+        desc: 'Default transfer reveal timeout',
+      },
+      defaultSettleTimeout: {
+        type: 'number',
+        default: 500,
+        desc: 'Default channel settle timeout',
+      },
+      ethRpcEndpoint: {
+        type: 'string',
+        default: 'http://127.0.0.1:8545',
+        desc: 'Ethereum JSON RPC node endpoint to use for blockchain interaction',
+      },
+      logFile: {
+        type: 'string',
+        desc: 'Output all logs to this file instead of stdout/stderr',
+        normalize: true,
+      },
+      matrixServer: {
+        type: 'string',
+        default: 'auto',
+        desc: 'URL of Matrix Transport server',
+      },
+      rpc: {
+        type: 'boolean',
+        default: true,
+        desc: 'Start with or without the RPC server',
+      },
+      rpccorsdomain: {
+        type: 'string',
+        default: 'http://localhost:*/*',
+        desc: 'Comma separated list of domains to accept cross origin requests.',
+      },
+      apiAddress: {
+        type: 'string',
+        default: '127.0.0.1:5001',
+        desc: 'host:port to bind to and listen for API requests',
+      },
+    })
+    .options({
+      routingMode: {
+        choices: ['pfs', 'local', 'private'] as const,
+        default: 'pfs',
+        desc: 'Anything else than "pfs" disables mediated transfers',
+      },
+      pathfindingServiceAddress: {
+        type: 'string',
+        default: 'auto',
+        desc: 'Force a given PFS to be used; "auto" selects cheapest registered on-chain',
+      },
+      pathfindingMaxPaths: {
+        type: 'number',
+        default: 3,
+        desc: 'Set maximum number of paths to be requested from the path finding service.',
+      },
+      pathfindingMaxFee: {
+        type: 'string',
+        // cast to fool TypeScript on type of argv.pathfindingMaxFee, decoded by Raiden.create
+        default: ('50000000000000000' as unknown) as UInt<32>,
+        desc: 'Set max fee per request paid to the path finding service.',
+      },
+      pathfindingIouTimeout: {
+        type: 'number',
+        default: 200000,
+        desc: 'Number of blocks before a new IOU to the path finding service expires.',
+      },
+      enableMonitoring: {
+        type: 'boolean',
+        default: false,
+        desc: "Enables monitoring if there's a UDC deposit",
       },
     })
     .env('RAIDEN')
-    .help().argv;
+    .help()
+    .alias('h', 'help')
+    .version()
+    .alias('V', 'version').argv;
+}
 
-  // eslint-disable-next-line prefer-const
-  let stopSub: ReturnType<typeof raiden.events$.subscribe>;
-  const raidenStop = () => {
-    if (stopSub) stopSub.unsubscribe();
-    if (server?.listening) server.close();
-    if (!raiden?.started) process.exit(1);
-    log.info('Stopping...');
-    raiden.stop();
-  };
-  process.on('SIGINT', raidenStop);
-  process.on('SIGTERM', raidenStop);
+async function getKeystoreAccounts(keystorePath: string): Promise<{ [addr: string]: string[] }> {
+  const keys: { [addr: string]: string[] } = {};
+  for (const filename of await fs.readdir(keystorePath)) {
+    try {
+      const json = await fs.readFile(path.join(keystorePath, filename), 'utf-8');
+      const address = getAddress(JSON.parse(json)['address']);
+      if (!(address in keys)) keys[address] = [];
+      keys[address].push(json);
+    } catch (e) {}
+  }
+  return keys;
+}
 
-  if (!argv.password) {
-    // argv.password = inquirer.prompt('Private Key Password: ', { hideEchoBack: true });
-    argv.password = (
-      await inquirer.prompt<{ password: string }>([
-        { type: 'password', name: 'password', message: 'Private Key Password:', mask: '*' },
-      ])
-    ).password;
+async function getWallet(
+  keystoreDir: string,
+  address?: string,
+  passwordFile?: string,
+): Promise<Wallet> {
+  const keys = await getKeystoreAccounts(keystoreDir);
+  if (!Object.keys(keys).length)
+    throw new Error(`No account found on keystore directory "${keystoreDir}"`);
+  else if (!address)
+    ({ address } = await inquirer.prompt<{ address: string }>([
+      { type: 'list', name: 'address', message: 'Account:', choices: Object.keys(keys) },
+    ]));
+  else if (!(address in keys)) throw new Error(`Could not find keystore file for "${address}"`);
+
+  let password;
+  if (passwordFile) password = (await fs.readFile(passwordFile, 'utf-8')).split('\n').shift()!;
+  else
+    ({ password } = await inquirer.prompt<{ password: string }>([
+      { type: 'password', name: 'password', message: `[${address}] Password:`, mask: '*' },
+    ]));
+
+  for (const json of keys[address]) {
+    try {
+      return await Wallet.fromEncryptedJson(json, password);
+    } catch (e) {}
   }
 
-  const wallet = await Wallet.fromEncryptedJson(
-    await fs.readFile(argv.privateKey, 'utf-8'),
-    argv.password,
-  );
-  log = logging.getLogger(`cli:${wallet.address}`);
-  log.info('Address:', wallet.address);
+  throw new Error(`Could not decrypt keystore for "${address}" with provided password`);
+}
 
-  const localStorage = new LocalStorage(argv.store);
+function createLocalStorage(name: string): LocalStorage {
+  const localStorage = new LocalStorage(name);
   Object.assign(globalThis, { localStorage });
+  return localStorage;
+}
 
-  const defaultConfig = {
-    matrixServer: 'https://raidentransport.test001.env.raiden.network',
-    pfs: 'https://pfs.raidentransport.test001.env.raiden.network',
-    pfsSafetyMargin: 1.1,
-    caps: { noDelivery: true, webRTC: true },
-  };
-  raiden = await Raiden.create(argv.ethNode, wallet.privateKey, localStorage, undefined, {
-    ...defaultConfig,
-    ...argv.config,
-  });
-
-  const init = raidenInit(argv);
-  raiden.start();
-  // if events$ completes, it means raiden shut down
-  stopSub = raiden.events$.subscribe(undefined, raidenStop, raidenStop);
-  try {
-    await init;
-    if (argv.serve) await setupApi(argv.serve);
-  } finally {
-    if (!argv.serve) raidenStop();
+function shutdownServer(this: Cli): void {
+  if (this.server?.listening) {
+    this.log.info('Closing server...');
+    this.server.close();
   }
+}
+
+function unrefTimeout(timeout: number | NodeJS.Timeout) {
+  if (typeof timeout === 'number') return;
+  timeout.unref();
+}
+
+function shutdownRaiden(this: Cli): void {
+  if (this.raiden.started) {
+    this.log.info('Stopping raiden...');
+    this.raiden.stop();
+    // force-exit at most 5s after stopping raiden
+    unrefTimeout(setTimeout(() => process.exit(0), 5000));
+  } else {
+    process.exit(1);
+  }
+}
+
+function registerShutdownHooks(this: Cli): void {
+  // raiden shutdown triggers server shutdown
+  this.raiden.state$.subscribe({
+    error: shutdownServer.bind(this),
+    complete: shutdownServer.bind(this),
+  });
+  process.on('SIGINT', shutdownRaiden.bind(this));
+  process.on('SIGTERM', shutdownRaiden.bind(this));
+}
+
+async function createRaidenConfig(
+  argv: ReturnType<typeof parseArguments>,
+): Promise<Partial<RaidenConfig>> {
+  let config: Partial<RaidenConfig> = DEFAULT_RAIDEN_CONFIG;
+
+  if (argv.configFile)
+    config = { ...config, ...JSON.parse(await fs.readFile(argv.configFile, 'utf-8')) };
+
+  config = {
+    ...config,
+    pollingInterval: Math.floor(argv.blockchainQueryInterval * 1000),
+    revealTimeout: argv.defaultRevealTimeout,
+    settleTimeout: argv.defaultSettleTimeout,
+    pfsMaxPaths: argv.pathfindingMaxPaths,
+    pfsMaxFee: argv.pathfindingMaxFee,
+    pfsIouTimeout: argv.pathfindingIouTimeout,
+  };
+
+  if (argv.matrixServer !== 'auto') config = { ...config, matrixServer: argv.matrixServer };
+
+  if (argv.routingMode !== 'pfs') config = { ...config, pfs: null };
+  else if (argv.pathfindingServiceAddress !== 'auto')
+    config = { ...config, pfs: argv.pathfindingServiceAddress };
+
+  if (!argv.enableMonitoring) config = { ...config, monitoringReward: null };
+
+  return config;
+}
+
+const endpointRe = /^(?:\w+:\/\/)?([^\/]*):(\d+)$/;
+function parseEndpoint(url: string): readonly [string, number] {
+  const match = url.match(endpointRe);
+  assert(match, 'Invalid endpoint');
+  const [, host, port] = match;
+  return [host || '127.0.0.1', +port];
+}
+
+async function checkDisclaimer(accepted?: boolean): Promise<void> {
+  console.info(DISCLAIMER);
+  if (accepted === undefined) {
+    ({ accepted } = await inquirer.prompt<{ accepted: boolean }>([
+      {
+        type: 'confirm',
+        name: 'accepted',
+        message:
+          'Have you read, understood and hereby accept the above disclaimer and privacy warning?',
+        default: false,
+      },
+    ]));
+  } else if (accepted) {
+    console.info('Disclaimer accepted by command line parameter.');
+  }
+  assert(accepted, 'Disclaimer not accepted!');
+}
+
+async function main() {
+  const argv = parseArguments();
+  await checkDisclaimer(argv.acceptDisclaimer);
+  const wallet = await getWallet(argv.keystorePath, argv.address, argv.passwordFile);
+  setupLoglevel(argv.logFile);
+  const storage = createLocalStorage(argv.datadir);
+  const endpoint = parseEndpoint(argv.apiAddress);
+  const config = await createRaidenConfig(argv);
+
+  const raiden = await Raiden.create(
+    argv.ethRpcEndpoint,
+    wallet.privateKey,
+    { storage, prefix: argv.datadir.endsWith('/') ? argv.datadir : argv.datadir + '/' },
+    argv.userDepositContractAddress,
+    config,
+  );
+  const cli = makeCli(raiden, endpoint, undefined, argv.rpccorsdomain);
+  registerShutdownHooks.call(cli);
+  cli.raiden.start();
 }
 
 main().catch((err) => {

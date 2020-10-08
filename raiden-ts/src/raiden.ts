@@ -2,7 +2,7 @@ import './polyfills';
 import { Signer } from 'ethers/abstract-signer';
 import { AsyncSendable, Web3Provider, JsonRpcProvider } from 'ethers/providers';
 import { Network, BigNumber, BigNumberish, bigNumberify } from 'ethers/utils';
-import { Zero, AddressZero, MaxUint256, HashZero } from 'ethers/constants';
+import { Zero, AddressZero, MaxUint256 } from 'ethers/constants';
 
 import { MatrixClient } from 'matrix-js-sdk';
 import { applyMiddleware, createStore, Store } from 'redux';
@@ -22,14 +22,15 @@ import { ServiceRegistryFactory } from './contracts/ServiceRegistryFactory';
 import { CustomTokenFactory } from './contracts/CustomTokenFactory';
 import { UserDepositFactory } from './contracts/UserDepositFactory';
 import { SecretRegistryFactory } from './contracts/SecretRegistryFactory';
+import { MonitoringServiceFactory } from './contracts/MonitoringServiceFactory';
 
 import versions from './versions.json';
 import { ContractsInfo, EventTypes, OnChange, RaidenEpicDeps, Latest } from './types';
 import { ShutdownReason } from './constants';
-import { RaidenState, getState } from './state';
-import { RaidenConfig, PartialRaidenConfig } from './config';
+import { RaidenState } from './state';
+import { RaidenConfig, PartialRaidenConfig, makeDefaultConfig } from './config';
 import { RaidenChannels, ChannelState } from './channels/state';
-import { RaidenTransfer, Direction } from './transfers/state';
+import { RaidenTransfer, Direction, TransferState } from './transfers/state';
 import { raidenReducer } from './reducer';
 import { raidenRootEpic, getLatest$ } from './epics';
 import {
@@ -39,6 +40,7 @@ import {
   raidenShutdown,
   raidenConfigUpdate,
 } from './actions';
+import { assert } from './utils';
 import {
   channelOpen,
   channelDeposit,
@@ -46,9 +48,9 @@ import {
   channelSettle,
   tokenMonitored,
 } from './channels/actions';
-import { channelKey } from './channels/utils';
+import { channelKey, channelAmounts } from './channels/utils';
 import { matrixPresence } from './transport/actions';
-import { transfer, transferSigned } from './transfers/actions';
+import { transfer, transferSigned, withdraw } from './transfers/actions';
 import {
   makeSecret,
   getSecrethash,
@@ -57,10 +59,10 @@ import {
   transferKey,
   transferKeyToMeta,
 } from './transfers/utils';
-import { pathFind } from './services/actions';
+import { pathFind, udcWithdraw, udcDeposit } from './services/actions';
 import { Paths, RaidenPaths, PFS, RaidenPFS, IOU } from './services/types';
 import { pfsListInfo } from './services/utils';
-import { Address, Secret, Storage, Hash, UInt, decode, assert, isntNil } from './utils/types';
+import { Address, Secret, Storage, Hash, UInt, decode } from './utils/types';
 import { isActionOf, asyncActionToPromise, isResponseOf } from './utils/actions';
 import { patchSignSend } from './utils/ethers';
 import { pluckDistinct } from './utils/rx';
@@ -73,8 +75,14 @@ import {
   getContractWithSigner,
   waitConfirmation,
   callAndWaitMined,
+  fetchContractsInfo,
+  getUdcBalance,
+  getState,
 } from './helpers';
 import { RaidenError, ErrorCodes } from './utils/error';
+import { RaidenDatabase } from './db/types';
+import { dumpDatabaseToArray } from './db/utils';
+import { createPersisterMiddleware } from './persister';
 
 export class Raiden {
   private readonly store: Store<RaidenState, RaidenAction>;
@@ -86,8 +94,7 @@ export class Raiden {
    */
   public readonly action$: Observable<RaidenAction>;
   /**
-   * state$ is exposed only so user can listen to state changes and persist them somewhere else,
-   * in case they didn't use the Storage overload for the storageOrState argument of `create`.
+   * state$ is exposed only so user can listen to state changes and persist them somewhere else.
    * Format/content of the emitted objects are subject to changes and not part of the public API
    */
   public readonly state$: Observable<RaidenState>;
@@ -159,13 +166,21 @@ export class Raiden {
     network: Network,
     signer: Signer,
     contractsInfo: ContractsInfo,
-    state: RaidenState,
-    defaultConfig: RaidenConfig,
+    {
+      db,
+      state,
+      config,
+    }: { state: RaidenState; db: RaidenDatabase; config?: PartialRaidenConfig },
     main?: { address: Address; signer: Signer },
   ) {
-    this.resolveName = provider.resolveName.bind(provider) as (name: string) => Promise<Address>;
     const address = state.address;
+    this.resolveName = provider.resolveName.bind(provider) as (name: string) => Promise<Address>;
     this.log = logging.getLogger(`raiden:${address}`);
+
+    const defaultConfig = makeDefaultConfig(
+      { network },
+      config && decode(PartialRaidenConfig, config),
+    );
 
     // use next from latest known blockNumber as start block when polling
     provider.resetEventsBlock(state.blockNumber + 1);
@@ -177,11 +192,11 @@ export class Raiden {
     // pipe action, skipping cached
     this.action$ = latest$.pipe(pluckDistinct('action'), skip(1));
     this.channels$ = this.state$.pipe(pluckDistinct('channels'), map(mapRaidenChannels));
-    this.transfers$ = initTransfers$(this.state$);
+    this.transfers$ = initTransfers$(this.state$, db);
     this.events$ = this.action$.pipe(filter(isActionOf(RaidenEvents)));
 
     this.getTokenInfo = memoize(async function (this: Raiden, token: string) {
-      assert(Address.is(token), 'Invalid address');
+      assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
       const tokenContract = this.deps.getTokenContract(token);
       const [totalSupply, decimals, name, symbol] = await Promise.all([
         tokenContract.functions.totalSupply(),
@@ -190,7 +205,7 @@ export class Raiden {
         tokenContract.functions.symbol().catch(constant(undefined)),
       ]);
       // workaround for https://github.com/microsoft/TypeScript/issues/33752
-      assert(totalSupply && decimals != null, 'Not a token contract');
+      assert(totalSupply && decimals != null, ErrorCodes.RDN_NOT_A_TOKEN, this.log.info);
       return { totalSupply, decimals, name, symbol };
     });
 
@@ -227,7 +242,12 @@ export class Raiden {
         contractsInfo.SecretRegistry.address,
         main?.signer ?? signer,
       ),
+      monitoringServiceContract: MonitoringServiceFactory.connect(
+        contractsInfo.MonitoringService.address,
+        main?.signer ?? signer,
+      ),
       main,
+      db,
     };
 
     this.userDepositTokenAddress = memoize(
@@ -238,7 +258,7 @@ export class Raiden {
       predicate: () => this.log.getLevel() <= logging.levels.INFO,
       logger: this.log,
       level: {
-        prevState: 'debug',
+        prevState: false,
         action: 'info',
         error: 'error',
         nextState: 'debug',
@@ -248,10 +268,6 @@ export class Raiden {
     this.config$ = this.deps.config$;
     this.config$.subscribe((config) => (this.config = config));
 
-    this.config$
-      .pipe(pluckDistinct('logger'))
-      .subscribe((logger) => this.log.setLevel(logger || 'silent', false));
-
     // minimum blockNumber of contracts deployment as start scan block
     this.epicMiddleware = createEpicMiddleware<
       RaidenAction,
@@ -259,15 +275,16 @@ export class Raiden {
       RaidenState,
       RaidenEpicDeps
     >({ dependencies: this.deps });
+    const persisterMiddleware = createPersisterMiddleware(db);
 
     this.store = createStore(
       raidenReducer,
       // workaround for redux's PreloadedState issues with branded values
       state as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      applyMiddleware(loggerMiddleware, this.epicMiddleware),
+      applyMiddleware(loggerMiddleware, this.epicMiddleware, persisterMiddleware),
     );
 
-    // populate deps.latest$, to ensure config & logger subscriptions are setup before start
+    // populate deps.latest$, to ensure config, logger && pollingInterval are setup before start
     getLatest$(
       of(raidenConfigUpdate({})),
       of(this.store.getState()),
@@ -296,10 +313,16 @@ export class Raiden {
    *       <li>number index of a remote account loaded in provider
    *            (e.g. 0 for Metamask's loaded account)</li>
    *     </ul>
-   * @param storageOrState - Storage/localStorage-like object from where to load and store current
-   *     state, initial RaidenState-like object, or a { storage; state? } object containing both.
-   *     If a storage isn't provided, user must listen state$ changes on ensure it's persisted.
-   * @param contracts - Contracts deployment info
+   * @param storage - Storage/localStorage-like object from where to load and store current
+   * state, initial RaidenState-like object, or a { storage; state? } object containing both.
+   * If a storage isn't provided, user must listen state$ changes on ensure it's persisted.
+   * @param storage.state - State uploaded by user; should be decodable by RaidenState;
+   *    it is auto-migrated
+   * @param storage.storage - Legacy localStorage; will load states from there if matching
+   * @param storage.adapter - PouchDB adapter; default to 'indexeddb' on browsers and 'leveldb' on
+   *    node. If you provide a custom one, ensure you call PouchDB.plugin on it.
+   * @param storage.prefix - Database name prefix; use to set a directory to store leveldown db;
+   * @param contractsOrUDCAddress - Contracts deployment info, or UserDeposit contract address
    * @param config - Raiden configuration
    * @param subkey - Whether to use a derived subkey or not
    * @returns Promise to Raiden SDK client instance
@@ -308,12 +331,9 @@ export class Raiden {
     this: R,
     connection: JsonRpcProvider | AsyncSendable | string,
     account: Signer | string | number,
-    storageOrState?:
-      | Storage
-      | RaidenState
-      | { storage: Storage; state?: RaidenState | unknown }
-      | unknown,
-    contracts?: ContractsInfo,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    storage?: { state?: any; storage?: Storage; adapter?: any; prefix?: string },
+    contractsOrUDCAddress?: ContractsInfo | string,
     config?: PartialRaidenConfig,
     subkey?: true,
   ): Promise<InstanceType<R>> {
@@ -332,42 +352,58 @@ export class Raiden {
     const network = await provider.getNetwork();
 
     // if no ContractsInfo, try to populate from defaults
-    if (!contracts) {
-      contracts = getContracts(network);
+    let contractsInfo;
+    if (!contractsOrUDCAddress) {
+      contractsInfo = getContracts(network);
+    } else if (typeof contractsOrUDCAddress === 'string') {
+      // if an Address is provided, use it as UserDeposit contract address entrypoint and fetch
+      // all contracts from there
+      assert(Address.is(contractsOrUDCAddress), [
+        ErrorCodes.DTA_INVALID_ADDRESS,
+        { contractsOrUserDepositAddress: contractsOrUDCAddress },
+      ]);
+      contractsInfo = await fetchContractsInfo(provider, contractsOrUDCAddress);
+    } else {
+      contractsInfo = contractsOrUDCAddress;
     }
 
     const { signer, address, main } = await getSigner(account, provider, subkey);
 
-    // Build initial state or parse from storage
-    const { state, onState, onStateComplete, defaultConfig } = await getState(
-      network,
-      contracts,
-      address,
-      storageOrState,
-      config && decode(PartialRaidenConfig, config),
+    // Build initial state or parse from database
+    const { state, db } = await getState(
+      { network, contractsInfo, address, log: logging.getLogger(`raiden:${address}`) },
+      storage,
     );
 
-    assert(
-      address === state.address,
-      `Mismatch between provided account and loaded state: "${address}" !== "${state.address}"`,
-    );
+    assert(address === state.address, [
+      ErrorCodes.RDN_STATE_ADDRESS_MISMATCH,
+      {
+        account: address,
+        state: state.address,
+      },
+    ]);
     assert(
       network.chainId === state.chainId &&
-        contracts.TokenNetworkRegistry.address === state.registry,
-      `Mismatch between network or registry address and loaded state`,
+        contractsInfo.TokenNetworkRegistry.address === state.registry,
+      [
+        ErrorCodes.RDN_STATE_NETWORK_MISMATCH,
+        {
+          network: network.chainId,
+          contracts: contractsInfo.TokenNetworkRegistry.address,
+          stateNetwork: state.chainId,
+          stateRegistry: state.registry,
+        },
+      ],
     );
 
-    const raiden = new this(
+    return new this(
       provider,
       network,
       signer,
-      contracts,
-      state,
-      defaultConfig,
+      contractsInfo,
+      { db, state, config },
       main,
     ) as InstanceType<R>;
-    if (onState) raiden.state$.subscribe(onState, onStateComplete, onStateComplete);
-    return raiden;
   }
 
   /**
@@ -376,9 +412,22 @@ export class Raiden {
    * No event should be emitted before start is called
    */
   public start(): void {
-    assert(this.epicMiddleware, 'Already started or stopped!');
-    // on complete, sets epicMiddleware to null, so this.started === false
-    this.deps.latest$.subscribe(undefined, undefined, () => (this.epicMiddleware = null));
+    assert(this.epicMiddleware, ErrorCodes.RDN_ALREADY_STARTED, this.log.info);
+    this.log.info('Starting Raiden Light-Client', {
+      prevBlockNumber: this.state.blockNumber,
+      address: this.address,
+      TokenNetworkRegistry: this.deps.contractsInfo.TokenNetworkRegistry.address,
+      network: this.deps.network,
+      'raiden-ts': Raiden.version,
+      'raiden-contracts': Raiden.contractVersion,
+    });
+
+    // Set `epicMiddleware` to `null`, this indicates the instance is not running.
+    const observerComplete = {
+      complete: () => (this.epicMiddleware = null),
+    };
+    this.deps.latest$.subscribe(observerComplete);
+
     this.epicMiddleware.run(raidenRootEpic);
     // prevent start from being called again, turns this.started to true
     this.epicMiddleware = undefined;
@@ -403,7 +452,7 @@ export class Raiden {
   public stop(): void {
     // start still can't be called again, but turns this.started to false
     // this.epicMiddleware is set to null by latest$'s complete callback
-    this.store.dispatch(raidenShutdown({ reason: ShutdownReason.STOP }));
+    if (this.started) this.store.dispatch(raidenShutdown({ reason: ShutdownReason.STOP }));
   }
 
   /**
@@ -470,12 +519,32 @@ export class Raiden {
   }
 
   /**
+   * Returns the Smart Contracts addresses and deployment blocks
+   *
+   * @returns Smart Contracts info
+   */
+  get contractsInfo(): ContractsInfo {
+    return this.deps.contractsInfo;
+  }
+
+  /**
    * Update Raiden Config with a partial (shallow) object
    *
    * @param config - Partial object containing keys and values to update in config
    */
   public updateConfig(config: PartialRaidenConfig) {
     this.store.dispatch(raidenConfigUpdate(decode(PartialRaidenConfig, config)));
+  }
+
+  /**
+   * Dumps database content for backup
+   *
+   * @returns JSON object or array containing database content
+   */
+  public async dumpDatabase() {
+    // only wait for db to be closed if it was started
+    if (this.started !== undefined) await this.deps.db.busy$.toPromise();
+    return dumpDatabaseToArray(this.deps.db);
   }
 
   /**
@@ -486,7 +555,7 @@ export class Raiden {
    */
   public getBalance(address?: string): Promise<BigNumber> {
     address = address ?? chooseOnchainAccount(this.deps, this.config.subkey).address;
-    assert(Address.is(address), 'Invalid address');
+    assert(Address.is(address), [ErrorCodes.DTA_INVALID_ADDRESS, { address }], this.log.info);
     return this.deps.provider.getBalance(address);
   }
 
@@ -499,7 +568,8 @@ export class Raiden {
    */
   public async getTokenBalance(token: string, address?: string): Promise<BigNumber> {
     address = address ?? chooseOnchainAccount(this.deps, this.config.subkey).address;
-    assert(Address.is(address) && Address.is(token), 'Invalid address');
+    assert(Address.is(address), [ErrorCodes.DTA_INVALID_ADDRESS, { address }], this.log.info);
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
 
     const tokenContract = this.deps.getTokenContract(token);
     return tokenContract.functions.balanceOf(address);
@@ -535,13 +605,15 @@ export class Raiden {
    * @returns Address of TokenNetwork contract
    */
   public async monitorToken(token: string): Promise<Address> {
-    assert(Address.is(token), 'Invalid address');
-    const alreadyMonitoredTokens = this.state.tokens;
-    if (token in alreadyMonitoredTokens) return alreadyMonitoredTokens[token];
-    const tokenNetwork = (await this.deps.registryContract.token_to_token_networks(
-      token,
-    )) as Address;
-    assert(tokenNetwork && tokenNetwork !== AddressZero, 'Unknown token network');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    let tokenNetwork = this.state.tokens[token];
+    if (tokenNetwork) return tokenNetwork;
+    tokenNetwork = (await this.deps.registryContract.token_to_token_networks(token)) as Address;
+    assert(
+      tokenNetwork && tokenNetwork !== AddressZero,
+      ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK,
+      this.log.info,
+    );
     this.store.dispatch(
       tokenMonitored({
         token,
@@ -571,18 +643,39 @@ export class Raiden {
     options: { settleTimeout?: number; subkey?: boolean; deposit?: BigNumberish } = {},
     onChange?: OnChange<EventTypes, { txHash: string }>,
   ): Promise<Hash> {
-    assert(Address.is(token) && Address.is(partner), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(partner), [ErrorCodes.DTA_INVALID_ADDRESS, { partner }], this.log.info);
     const tokenNetwork = await this.monitorToken(token);
-    assert(!options.subkey || this.deps.main, "Can't send tx from subkey if not set");
-    const deposit = options.deposit === undefined ? undefined : decode(UInt(32), options.deposit);
+    assert(!options.subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
+
+    // Note that we use the advantage of the UInt decoding here, but immediately
+    // convert it to a plain number again.
+    const settleTimeout = !options.settleTimeout
+      ? undefined
+      : decode(
+          UInt(4),
+          options.settleTimeout,
+          ErrorCodes.DTA_INVALID_TIMEOUT,
+          this.log.info,
+        ).toNumber();
+
+    const deposit = !options.deposit
+      ? undefined
+      : decode(UInt(32), options.deposit, ErrorCodes.DTA_INVALID_DEPOSIT, this.log.info);
 
     const meta = { tokenNetwork, partner };
     // wait for confirmation
-    const openPromise = asyncActionToPromise(channelOpen, meta, this.action$, false).then(
+    const openPromise = asyncActionToPromise(channelOpen, meta, this.action$, true).then(
       ({ txHash }) => txHash, // pluck txHash
     );
+    let depositPromise;
+    if (deposit) {
+      depositPromise = asyncActionToPromise(channelDeposit, meta, this.action$, true).then(
+        ({ txHash }) => txHash, // pluck txHash
+      );
+    }
 
-    this.store.dispatch(channelOpen.request({ ...options, deposit }, meta));
+    this.store.dispatch(channelOpen.request({ ...options, settleTimeout, deposit }, meta));
 
     const openTxHash = await openPromise;
     onChange?.({ type: EventTypes.OPENED, payload: { txHash: openTxHash } });
@@ -595,10 +688,8 @@ export class Raiden {
       .toPromise();
     onChange?.({ type: EventTypes.CONFIRMED, payload: { txHash: openTxHash } });
 
-    if (deposit) {
-      const depositTx = await asyncActionToPromise(channelDeposit, meta, this.action$, true).then(
-        ({ txHash }) => txHash, // pluck txHash
-      );
+    if (depositPromise) {
+      const depositTx = await depositPromise;
       onChange?.({ type: EventTypes.DEPOSITED, payload: { txHash: depositTx } });
     }
 
@@ -624,13 +715,14 @@ export class Raiden {
     amount: BigNumberish,
     { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    assert(Address.is(token) && Address.is(partner), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(partner), [ErrorCodes.DTA_INVALID_ADDRESS, { partner }], this.log.info);
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
-    const deposit = decode(UInt(32), amount);
+    const deposit = decode(UInt(32), amount, ErrorCodes.DTA_INVALID_DEPOSIT, this.log.info);
     const meta = { tokenNetwork, partner };
     const promise = asyncActionToPromise(channelDeposit, meta, this.action$, true).then(
       ({ txHash }) => txHash,
@@ -660,11 +752,12 @@ export class Raiden {
     partner: string,
     { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    assert(Address.is(token) && Address.is(partner), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(partner), [ErrorCodes.DTA_INVALID_ADDRESS, { partner }], this.log.info);
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
     const meta = { tokenNetwork, partner };
     const promise = asyncActionToPromise(channelClose, meta, this.action$, true).then(
@@ -694,11 +787,12 @@ export class Raiden {
     partner: string,
     { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    assert(Address.is(token) && Address.is(partner), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(partner), [ErrorCodes.DTA_INVALID_ADDRESS, { partner }], this.log.info);
     const state = this.state;
     const tokenNetwork = state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
     // wait for the corresponding success or error action
     const meta = { tokenNetwork, partner };
@@ -720,7 +814,7 @@ export class Raiden {
   public async getAvailability(
     address: string,
   ): Promise<{ userId: string; available: boolean; ts: number }> {
-    assert(Address.is(address), 'Invalid address');
+    assert(Address.is(address), [ErrorCodes.DTA_INVALID_ADDRESS, { address }], this.log.info);
     const meta = { address };
     const promise = asyncActionToPromise(matrixPresence, meta, this.action$);
     this.store.dispatch(matrixPresence.request(undefined, meta));
@@ -735,7 +829,7 @@ export class Raiden {
    * transfer. Any following transfer state change will be notified through this observable.
    *
    * @param token - Token address on currently configured token network registry
-   * @param target - Target address (must be getAvailability before)
+   * @param target - Target address
    * @param value - Amount to try to transfer
    * @param options - Optional parameters for transfer:
    * @param options.paymentId - payment identifier, a random one will be generated if missing</li>
@@ -747,6 +841,7 @@ export class Raiden {
    *     Is ignored if paths were already provided. If neither are set and config.pfs is not
    *     disabled (null), use it if set or if undefined (auto mode), fetches the best
    *     PFS from ServiceRegistry and automatically fetch routes from it.</li>
+   * @param options.lockTimeout - Specify a lock timeout for transfer; default is 2 * revealTimeout
    * @returns A promise to transfer's unique key (id) when it's accepted
    */
   public async transfer(
@@ -759,21 +854,39 @@ export class Raiden {
       secrethash?: string;
       paths?: RaidenPaths;
       pfs?: RaidenPFS;
+      lockTimeout?: number;
     } = {},
   ): Promise<string> {
-    assert(Address.is(token) && Address.is(target), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(target), [ErrorCodes.DTA_INVALID_ADDRESS, { target }], this.log.info);
     const tokenNetwork = this.state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
 
-    const decodedValue = decode(UInt(32), value);
-    const paymentId = options.paymentId ? decode(UInt(8), options.paymentId) : makePaymentId();
-    const paths = options.paths ? decode(Paths, options.paths) : undefined;
-    const pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
+    const decodedValue = decode(UInt(32), value, ErrorCodes.DTA_INVALID_AMOUNT, this.log.info);
+    const paymentId =
+      options.paymentId !== undefined
+        ? decode(UInt(8), options.paymentId, ErrorCodes.DTA_INVALID_PAYMENT_ID, this.log.info)
+        : makePaymentId();
+    const paths = !options.paths
+      ? undefined
+      : decode(Paths, options.paths, ErrorCodes.DTA_INVALID_PATH, this.log.info);
+    const pfs = !options.pfs
+      ? undefined
+      : decode(PFS, options.pfs, ErrorCodes.DTA_INVALID_PFS, this.log.info);
+    // if undefined, default expiration is calculated at locked's [[makeAndSignTransfer$]]
+    const expiration = !options.lockTimeout
+      ? undefined
+      : this.state.blockNumber + options.lockTimeout;
 
-    assert(options.secret === undefined || Secret.is(options.secret), 'Invalid options.secret');
+    assert(
+      options.secret === undefined || Secret.is(options.secret),
+      ErrorCodes.RDN_INVALID_SECRET,
+      this.log.info,
+    );
     assert(
       options.secrethash === undefined || Hash.is(options.secrethash),
-      'Invalid options.secrethash',
+      ErrorCodes.RDN_INVALID_SECRETHASH,
+      this.log.info,
     );
 
     // use provided secret or create one if no secrethash was provided
@@ -785,7 +898,8 @@ export class Raiden {
     const secrethash = options.secrethash || getSecrethash(secret!);
     assert(
       !secret || getSecrethash(secret) === secrethash,
-      'Provided secrethash must match the sha256 hash of provided secret',
+      ErrorCodes.RDN_SECRET_SECRETHASH_MISMATCH,
+      this.log.info,
     );
 
     const pathFindMeta = { tokenNetwork, target, value: decodedValue };
@@ -832,6 +946,7 @@ export class Raiden {
                     paths,
                     paymentId,
                     secret,
+                    expiration,
                   },
                   { secrethash, direction: Direction.SENT },
                 ),
@@ -846,26 +961,47 @@ export class Raiden {
 
   /**
    * Waits for the transfer identified by a secrethash to fail or complete
+   * The returned promise will resolve with the final transfer state, or reject if anything fails
    *
-   * The returned promise will resolve with the final amount received by the target
-   *
-   * @param transferKey - Transfer identifier
-   * @returns Amount received by target, as informed by them on SecretRequest
+   * @param transferKey - Transfer identifier as returned by [[transfer]]
+   * @returns Promise to final RaidenTransfer
    */
-  public async waitTransfer(transferKey: string): Promise<BigNumber | undefined> {
+  public async waitTransfer(transferKey: string): Promise<RaidenTransfer> {
     const { direction, secrethash } = transferKeyToMeta(transferKey);
-    assert(secrethash in this.state[direction], 'Unknown transfer');
+    let transferState = this.state.transfers[transferKey];
+    if (!transferState)
+      try {
+        transferState = decode(TransferState, await this.deps.db.get(transferKey));
+      } catch (e) {}
+    assert(transferState, ErrorCodes.RDN_UNKNOWN_TRANSFER, this.log.info);
 
-    const transf = raidenTransfer(this.state[direction][secrethash]);
+    const raidenTransf = raidenTransfer(transferState);
     // already completed/past transfer
-    if (transf.completed) {
-      if (transf.success) return this.state[direction][secrethash].secretRequest?.[1]?.amount;
-      else throw new RaidenError(ErrorCodes.XFER_ALREADY_COMPLETED, { status: transf.status });
+    if (raidenTransf.completed) {
+      if (raidenTransf.success) return raidenTransf;
+      else
+        throw new RaidenError(ErrorCodes.XFER_ALREADY_COMPLETED, { status: raidenTransf.status });
     }
 
     // throws/rejects if a failure occurs
     await asyncActionToPromise(transfer, { secrethash, direction }, this.action$);
-    return this.state[direction][secrethash].secretRequest?.[1]?.amount;
+    const finalState = await this.state$
+      .pipe(
+        pluck('transfers', transferKey),
+        first((transferState) => !!transferState.unlockProcessed),
+      )
+      .toPromise();
+    this.log.info('Transfer successful', {
+      key: transferKey,
+      partner: finalState.partner,
+      initiator: finalState.transfer.initiator,
+      target: finalState.transfer.target,
+      fee: finalState.fee.toString(),
+      lockAmount: finalState.transfer.lock.amount.toString(),
+      targetReceived: finalState.secretRequest?.amount?.toString?.(),
+      transferTime: finalState.unlockProcessed!.ts - finalState.transfer.ts,
+    });
+    return raidenTransfer(finalState);
   }
 
   /**
@@ -876,7 +1012,7 @@ export class Raiden {
    * Else, if no route can be found, promise is rejected with respective error.
    *
    * @param token - Token address on currently configured token network registry
-   * @param target - Target address (must be getAvailability before)
+   * @param target - Target address
    * @param value - Minimum capacity required on routes
    * @param options - Optional parameters
    * @param options.pfs - Use this PFS instead of configured or automatically choosen ones
@@ -888,9 +1024,10 @@ export class Raiden {
     value: BigNumberish,
     options: { pfs?: RaidenPFS } = {},
   ): Promise<Paths> {
-    assert(Address.is(token) && Address.is(target), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(target), [ErrorCodes.DTA_INVALID_ADDRESS, { target }], this.log.info);
     const tokenNetwork = this.state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
 
     const decodedValue = decode(UInt(32), value);
     const pfs = options.pfs ? decode(PFS, options.pfs) : undefined;
@@ -907,7 +1044,7 @@ export class Raiden {
    * single-element array of Paths
    *
    * @param token - Token address on currently configured token network registry
-   * @param target - Target address (must be getAvailability before)
+   * @param target - Target address
    * @param value - Minimum capacity required on route
    * @returns Promise to a [Raiden]Paths array containing the single, direct route, or undefined
    */
@@ -916,9 +1053,10 @@ export class Raiden {
     target: string,
     value: BigNumberish,
   ): Promise<Paths | undefined> {
-    assert(Address.is(token) && Address.is(target), 'Invalid address');
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(target), [ErrorCodes.DTA_INVALID_ADDRESS, { target }], this.log.info);
     const tokenNetwork = this.state.tokens[token];
-    assert(tokenNetwork, 'Unknown token network');
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
 
     const decodedValue = decode(UInt(32), value);
 
@@ -943,7 +1081,7 @@ export class Raiden {
    * @returns Promise to array of PFS, which is the interface which describes a PFS
    */
   public async findPFS(): Promise<PFS[]> {
-    assert(this.config.pfs !== null, 'PFS disabled in config');
+    assert(this.config.pfs !== null, ErrorCodes.PFS_DISABLED, this.log.info);
     return (this.config.pfs
       ? of<readonly (string | Address)[]>([this.config.pfs])
       : this.deps.latest$.pipe(
@@ -960,7 +1098,7 @@ export class Raiden {
    * Throws an error, if
    * <ol>
    *  <li>Executed on main net</li>
-   *  <li>`token` is not a valid address</li>
+   *  <li>`token` or `options.to` is not a valid address</li>
    *  <li>Token could not be minted</li>
    * </ol>
    *
@@ -971,28 +1109,37 @@ export class Raiden {
    *    Notice the beneficiary here is always the account that sends the transaction, as this is
    *    expectedly also the account that will pay for e.g. future deposits.
    *    Set this to true if one wants to force sending the transaction with the subkey
+   * @param options.to - Beneficiary, defaults to mainAddress or address
    * @returns transaction
    */
   public async mint(
     token: string,
     amount: BigNumberish,
-    { subkey }: { subkey?: boolean } = {},
+    { subkey, to }: { subkey?: boolean; to?: string } = {},
   ): Promise<Hash> {
     // Check whether address is valid
-    assert(Address.is(token), 'Invalid address');
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set");
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
     // Check whether we are on a test network
-    assert(this.deps.network.name !== 'homestead', 'Minting is only allowed on test networks.');
+    assert(this.deps.network.chainId !== 1, ErrorCodes.RDN_MINT_MAINNET, this.log.info);
 
-    const { signer } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
     // Mint token
     const customTokenContract = CustomTokenFactory.connect(token, signer);
 
+    const beneficiary = to ?? address;
+    assert(
+      Address.is(beneficiary),
+      [ErrorCodes.DTA_INVALID_ADDRESS, { beneficiary }],
+      this.log.info,
+    );
+
+    const value = decode(UInt(32), amount, ErrorCodes.DTA_INVALID_AMOUNT);
     const receipt = await callAndWaitMined(
       customTokenContract,
-      'mint',
-      [decode(UInt(32), amount)],
+      'mintFor',
+      [value, beneficiary],
       ErrorCodes.RDN_MINT_FAILED,
       { log: this.log },
     );
@@ -1008,7 +1155,7 @@ export class Raiden {
    * @returns Promise to UDC remaining capacity
    */
   public async getUDCCapacity(): Promise<BigNumber> {
-    const balance = await this.deps.latest$.pipe(pluck('udcBalance'), first(isntNil)).toPromise();
+    const balance = await getUdcBalance(this.deps.latest$);
     const blockNumber = this.state.blockNumber;
     const owedAmount = Object.values(this.state.iou)
       .reduce(
@@ -1040,86 +1187,32 @@ export class Raiden {
    * @param options - tx options
    * @param options.subkey - By default, if using subkey, main account is used to send transactions
    *    Set this to true if one wants to force sending the transaction with the subkey
-   * @param options.allowance - Value to approve on service token. Allows further deposits without
-   *    needing to approve again. Defaults to exact amount.
    * @returns transaction hash
    */
   public async depositToUDC(
     amount: BigNumberish,
     onChange?: OnChange<EventTypes, { txHash: string }>,
-    { subkey, allowance }: { subkey?: boolean; allowance?: BigNumberish } = {},
+    { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.error);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
-    const deposit = bigNumberify(amount);
-    assert(deposit.gt(Zero), 'Please deposit a positive amount.', this.log.error);
+    const deposit = decode(UInt(32), amount, ErrorCodes.DTA_INVALID_DEPOSIT, this.log.info);
+    assert(deposit.gt(Zero), ErrorCodes.DTA_NON_POSITIVE_NUMBER, this.log.info);
+    const balance = await getUdcBalance(this.deps.latest$);
+    const meta = { totalDeposit: balance.add(deposit) as UInt<32> };
 
-    const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
+    const mined = asyncActionToPromise(udcDeposit, meta, this.action$).then((res) => res?.txHash);
+    this.store.dispatch(udcDeposit.request({ deposit, subkey }, meta));
 
-    const userDepositContract = getContractWithSigner(this.deps.userDepositContract, signer);
-    const tokenContract = getContractWithSigner(
-      this.deps.getTokenContract(await this.userDepositTokenAddress()),
-      signer,
+    let txHash = await mined;
+    onChange?.({ type: EventTypes.DEPOSITED, payload: { txHash: txHash! } });
+
+    const confirmed = asyncActionToPromise(udcDeposit, meta, this.action$, true).then(
+      (res) => res!.txHash,
     );
-    const tokenBalance = await tokenContract.functions.balanceOf(address);
-
-    assert(
-      tokenBalance.gte(amount),
-      `Insufficient token balance (${tokenBalance}).`,
-      this.log.error,
-    );
-    assert(
-      !allowance || bigNumberify(allowance).gte(amount),
-      'requested allowance smaller than amount',
-      this.log.error,
-    );
-
-    const tokenAllowance = await tokenContract.functions.allowance(
-      address,
-      userDepositContract.address,
-    );
-    let approveTxHash = HashZero as Hash;
-    if (tokenAllowance.lt(deposit))
-      approveTxHash = (
-        await callAndWaitMined(
-          tokenContract,
-          'approve',
-          [userDepositContract.address, allowance ?? deposit],
-          ErrorCodes.RDN_APPROVE_TRANSACTION_FAILED,
-          { log: this.log },
-        )
-      ).transactionHash as Hash;
-
-    onChange?.({ type: EventTypes.APPROVED, payload: { txHash: approveTxHash } });
-
-    const udcTotalDeposit = await userDepositContract.functions.total_deposit(this.address);
-
-    const depositReceipt = await callAndWaitMined(
-      userDepositContract,
-      'deposit',
-      [this.address, udcTotalDeposit.add(deposit)],
-      ErrorCodes.RDN_DEPOSIT_TRANSACTION_FAILED,
-      { log: this.log },
-    );
-
-    onChange?.({
-      type: EventTypes.DEPOSITED,
-      payload: {
-        txHash: depositReceipt.transactionHash as Hash,
-      },
-    });
-
-    await waitConfirmation(depositReceipt, this.deps);
-    this.log.debug(`deposit tx "${depositReceipt.transactionHash}" confirmed`);
-
-    onChange?.({
-      type: EventTypes.CONFIRMED,
-      payload: {
-        txHash: depositReceipt.transactionHash as Hash,
-      },
-    });
-
-    return depositReceipt.transactionHash as Hash;
+    txHash = await confirmed;
+    onChange?.({ type: EventTypes.CONFIRMED, payload: { txHash } });
+    return txHash;
   }
 
   /**
@@ -1146,8 +1239,8 @@ export class Raiden {
     value: BigNumberish = MaxUint256,
     { subkey, gasPrice }: { subkey?: boolean; gasPrice?: BigNumberish } = {},
   ): Promise<Hash> {
-    assert(Address.is(to), 'Invalid address', this.log.debug);
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.debug);
+    assert(Address.is(to), [ErrorCodes.DTA_INVALID_ADDRESS, { to }], this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
     const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
 
@@ -1157,7 +1250,11 @@ export class Raiden {
     const curBalance = await this.getBalance(address);
     // transferableBalance is current balance minus the cost of a single transfer as per gasPrice
     const transferableBalance = curBalance.sub(price.mul(gasLimit));
-    assert(transferableBalance.gt(Zero), 'Not enough balance for a transfer', this.log.error);
+    assert(
+      transferableBalance.gt(Zero),
+      [ErrorCodes.RDN_INSUFFICIENT_BALANCE, { transferable: transferableBalance.toString() }],
+      this.log.info,
+    );
 
     // caps value to transferableBalance, so if it's too big, transfer all
     const amount = transferableBalance.lte(value) ? transferableBalance : bigNumberify(value);
@@ -1165,7 +1262,7 @@ export class Raiden {
     const tx = await signer.sendTransaction({ to, value: amount, gasPrice: price, gasLimit });
     const receipt = await tx.wait();
 
-    if (!receipt.status) throw new RaidenError(ErrorCodes.RDN_TRANSFER_ONCHAIN_BALANCE_FAILED);
+    assert(receipt.status, ErrorCodes.RDN_TRANSFER_ONCHAIN_BALANCE_FAILED, this.log.info);
     return tx.hash! as Hash;
   }
 
@@ -1188,8 +1285,9 @@ export class Raiden {
     value: BigNumberish = MaxUint256,
     { subkey }: { subkey?: boolean } = {},
   ): Promise<Hash> {
-    assert(Address.is(token) && Address.is(to), 'Invalid address', this.log.debug);
-    assert(!subkey || this.deps.main, "Can't send tx from subkey if not set", this.log.debug);
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(to), [ErrorCodes.DTA_INVALID_ADDRESS, { to }], this.log.info);
+    assert(!subkey || this.deps.main, ErrorCodes.RDN_SUBKEY_NOT_SET, this.log.info);
 
     const { signer, address } = chooseOnchainAccount(this.deps, subkey ?? this.config.subkey);
     const tokenContract = getContractWithSigner(this.deps.getTokenContract(token), signer);
@@ -1206,6 +1304,73 @@ export class Raiden {
       { log: this.log },
     );
     return receipt.transactionHash as Hash;
+  }
+
+  public async planUdcWithdraw(value: BigNumberish): Promise<Hash> {
+    const meta = {
+      amount: decode(UInt(32), value, ErrorCodes.DTA_INVALID_AMOUNT, this.log.error),
+    };
+    const promise = asyncActionToPromise(udcWithdraw, meta, this.action$, true).then(
+      ({ txHash }) => txHash!,
+    );
+    this.store.dispatch(udcWithdraw.request(undefined, meta));
+    return promise;
+  }
+
+  /**
+   * Requests to withdraw from channel
+   *
+   * The requested amount defaults to the maximum withdrawable amount, which is exposed in
+   * [[channels$]] observable as the [[RaidenChannel.ownWithdrawable]] member.
+   * This involves requesting partner a signature which confirms they agree that we have the right
+   * for this amount of tokens, then a transaction is sent on-chain to withdraw tokens to the
+   * effective account.
+   * If this process fails, the amount remains locked until it can be expired later (defaults to
+   * 2 * config.revealTimeout blocks).
+   *
+   * @param token - Token address on currently configured token network registry
+   * @param partner - Partner address
+   * @param amount - Amount of tokens (in wei) to withdraw, must be between 1 and ownWithdrawable
+   * @returns Promise to the hash of the mined withdraw transaction
+   */
+  public async withdrawChannel(
+    token: string,
+    partner: string,
+    amount?: BigNumberish,
+  ): Promise<Hash> {
+    assert(Address.is(token), [ErrorCodes.DTA_INVALID_ADDRESS, { token }], this.log.info);
+    assert(Address.is(partner), [ErrorCodes.DTA_INVALID_ADDRESS, { partner }], this.log.info);
+    const tokenNetwork = this.state.tokens[token];
+    assert(tokenNetwork, ErrorCodes.RDN_UNKNOWN_TOKEN_NETWORK, this.log.info);
+    const channel = this.state.channels[channelKey({ tokenNetwork, partner })];
+    assert(
+      channel?.state === ChannelState.open,
+      ErrorCodes.CNL_NO_OPEN_CHANNEL_FOUND,
+      this.log.error,
+    );
+    const { ownWithdrawable, ownWithdraw } = channelAmounts(channel);
+    const requestedAmount = decode(
+      UInt(32),
+      amount ?? ownWithdrawable, // if not provided, defaults to whole withdrawable amount
+      ErrorCodes.DTA_INVALID_AMOUNT,
+      this.log.info,
+    );
+    // if it's too big, it'll fail on withdraw request handling epic
+    const totalWithdraw = ownWithdraw.add(requestedAmount) as UInt<32>;
+    const expiration = this.state.blockNumber + 2 * this.config.revealTimeout;
+
+    const meta = {
+      direction: Direction.SENT,
+      tokenNetwork,
+      partner,
+      totalWithdraw,
+      expiration,
+    };
+    const promise = asyncActionToPromise(withdraw, meta, this.action$, true).then(
+      ({ txHash }) => txHash,
+    );
+    this.store.dispatch(withdraw.request(undefined, meta));
+    return promise;
   }
 }
 

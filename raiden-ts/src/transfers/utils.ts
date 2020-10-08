@@ -1,9 +1,18 @@
 import { concat, hexlify } from 'ethers/utils/bytes';
 import { keccak256, randomBytes, bigNumberify, sha256 } from 'ethers/utils';
+import { HashZero } from 'ethers/constants';
+import { first, mergeMap, map, filter } from 'rxjs/operators';
+import { of, from, defer, Observable } from 'rxjs';
 
-import { Hash, Secret, UInt, HexString, assert } from '../utils/types';
+import { RaidenState } from '../state';
+import { channelUniqueKey } from '../channels/utils';
+import { assert } from '../utils';
+import { Hash, Secret, UInt, HexString, isntNil, decode } from '../utils/types';
 import { encode } from '../utils/data';
-import { Lock } from '../channels/types';
+import { Lock, BalanceProofZero } from '../channels/types';
+import { Channel } from '../channels';
+import { getBalanceProofFromEnvelopeMessage, createBalanceHash } from '../messages';
+import { RaidenDatabase, TransferStateish } from '../db/types';
 import { TransferState, RaidenTransfer, RaidenTransferStatus, Direction } from './state';
 
 /**
@@ -60,18 +69,6 @@ export function makeMessageId(): UInt<8> {
 }
 
 /**
- * Return the transfer direction for a TransferState
- *
- * @param state - transfer to get direction from, or TransferId
- * @returns Direction of transfer
- */
-export function transferDirection(state: TransferState | { direction: Direction }): Direction {
-  if ('direction' in state) return state.direction;
-  const transfer = state.transfer[1];
-  return transfer.recipient === state.partner ? Direction.SENT : Direction.RECEIVED;
-}
-
-/**
  * Get a unique key for a tranfer state or TransferId
  *
  * @param state - transfer to get key from, or TransferId
@@ -80,11 +77,11 @@ export function transferDirection(state: TransferState | { direction: Direction 
 export function transferKey(
   state: TransferState | { secrethash: Hash; direction: Direction },
 ): string {
-  if ('direction' in state) return `${state.direction}:${state.secrethash}`;
-  return `${transferDirection(state)}:${state.transfer[1].lock.secrethash}`;
+  if ('_id' in state) return state._id;
+  return `${state.direction}:${state.secrethash}`;
 }
 
-const _keyRe = new RegExp(`^(${Object.values(Direction).join('|')}):0x[a-z0-9]{64}$`, 'i');
+const keyRe = new RegExp(`^(${Object.values(Direction).join('|')}):(0x[a-f0-9]{64})$`, 'i');
 /**
  * Parse a transferKey into a TransferId object ({ secrethash, direction })
  *
@@ -92,31 +89,60 @@ const _keyRe = new RegExp(`^(${Object.values(Direction).join('|')}):0x[a-z0-9]{6
  * @returns secrethash, direction contained in transferKey
  */
 export function transferKeyToMeta(key: string): { secrethash: Hash; direction: Direction } {
-  assert(_keyRe.test(key), 'Invalid transferKey format');
-  const [direction, secrethash] = key.split(':');
+  const match = key.match(keyRe);
+  assert(match, 'Invalid transferKey format');
+  const [, direction, secrethash] = match;
   return { direction: direction as Direction, secrethash: secrethash as Hash };
 }
 
-function getTimeIfPresent<T>(k: keyof T): (o: T) => number | undefined {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (o: T) => (o[k] ? (o[k] as any)[0] : undefined);
+const statusesMap: { [K in RaidenTransferStatus]: (t: TransferState) => number | undefined } = {
+  [RaidenTransferStatus.expired]: (t) => t.expiredProcessed?.ts,
+  [RaidenTransferStatus.unlocked]: (t) => t.unlockProcessed?.ts,
+  [RaidenTransferStatus.expiring]: (t) => t.expired?.ts,
+  [RaidenTransferStatus.unlocking]: (t) => t.unlock?.ts,
+  [RaidenTransferStatus.registered]: (t) => t.secretRegistered?.ts,
+  [RaidenTransferStatus.revealed]: (t) => t.secretReveal?.ts,
+  [RaidenTransferStatus.requested]: (t) => t.secretRequest?.ts,
+  [RaidenTransferStatus.closed]: (t) => t.channelClosed?.ts,
+  [RaidenTransferStatus.received]: (t) => t.transferProcessed?.ts,
+  [RaidenTransferStatus.pending]: (t) => t.transfer.ts,
+};
+
+/**
+ * @param state - Transfer state
+ * @returns Transfer's status
+ */
+export function transferStatus(state: TransferState) {
+  // order matters! from top to bottom priority, first match breaks loop
+  for (const [s, g] of Object.entries(statusesMap)) {
+    const ts = g(state);
+    if (ts !== undefined) {
+      return s as RaidenTransferStatus;
+    }
+  }
+  return RaidenTransferStatus.pending;
 }
 
-const statusesMap: { [K in RaidenTransferStatus]: (t: TransferState) => number | undefined } = {
-  [RaidenTransferStatus.expired]: getTimeIfPresent<TransferState>('lockExpiredProcessed'),
-  [RaidenTransferStatus.unlocked]: getTimeIfPresent<TransferState>('unlockProcessed'),
-  [RaidenTransferStatus.expiring]: getTimeIfPresent<TransferState>('lockExpired'),
-  [RaidenTransferStatus.unlocking]: getTimeIfPresent<TransferState>('unlock'),
-  [RaidenTransferStatus.registered]: (sent: TransferState) =>
-    // only set status as registered if there's a valid registerBlock
-    sent.secret?.[1]?.registerBlock ? sent.secret[0] : undefined,
-  [RaidenTransferStatus.revealed]: getTimeIfPresent<TransferState>('secretReveal'),
-  [RaidenTransferStatus.requested]: getTimeIfPresent<TransferState>('secretRequest'),
-  [RaidenTransferStatus.closed]: getTimeIfPresent<TransferState>('channelClosed'),
-  [RaidenTransferStatus.refunded]: getTimeIfPresent<TransferState>('refund'),
-  [RaidenTransferStatus.received]: getTimeIfPresent<TransferState>('transferProcessed'),
-  [RaidenTransferStatus.pending]: getTimeIfPresent<TransferState>('transfer'),
-};
+/**
+ * @param state - Transfer state
+ * @returns Whether the transfer is considered completed
+ */
+export function transferCompleted(
+  state: TransferState,
+): state is TransferState &
+  NonNullable<
+    | Pick<TransferState, 'unlockProcessed'>
+    | Pick<TransferState, 'expiredProcessed'>
+    | Pick<TransferState, 'secretRegistered'>
+    | Pick<TransferState, 'channelSettled'>
+  > {
+  return !!(
+    state.unlockProcessed ||
+    state.expiredProcessed ||
+    state.secretRegistered ||
+    state.channelSettled
+  );
+}
 
 /**
  * Convert a TransferState to a public RaidenTransfer object
@@ -125,34 +151,20 @@ const statusesMap: { [K in RaidenTransferStatus]: (t: TransferState) => number |
  * @returns Public raiden sent transfer info object
  */
 export function raidenTransfer(state: TransferState): RaidenTransfer {
-  const startedAt = new Date(state.transfer[0]);
-  let changedAt = startedAt;
-  let status = RaidenTransferStatus.pending;
-  // order matters! from top to bottom priority, first match breaks loop
-  for (const [s, g] of Object.entries(statusesMap)) {
-    const ts = g(state);
-    if (ts !== undefined) {
-      status = s as RaidenTransferStatus;
-      changedAt = new Date(ts);
-      break;
-    }
-  }
-  const transfer = state.transfer[1];
-  const direction = transferDirection(state);
+  const status = transferStatus(state);
+  const startedAt = new Date(state.transfer.ts);
+  const changedAt = new Date(statusesMap[status](state)!);
+  const transfer = state.transfer;
+  const direction = state.direction;
   const value = transfer.lock.amount.sub(state.fee);
-  const invalidSecretRequest = state.secretRequest && state.secretRequest[1].amount.lt(value);
+  const invalidSecretRequest = state.secretRequest && state.secretRequest.amount.lt(value);
   const success =
-    state.secretReveal || state.unlock || state.secret?.[1]?.registerBlock
+    state.secretReveal || state.unlock || state.secretRegistered
       ? true
-      : invalidSecretRequest || state.refund || state.lockExpired || state.channelClosed
+      : invalidSecretRequest || state.expired || state.channelClosed
       ? false
       : undefined;
-  const completed = !!(
-    state.unlockProcessed ||
-    state.lockExpiredProcessed ||
-    state.secret?.[1]?.registerBlock ||
-    state.channelClosed
-  );
+  const completed = transferCompleted(state);
   return {
     key: transferKey(state),
     secrethash: transfer.lock.secrethash,
@@ -175,5 +187,55 @@ export function raidenTransfer(state: TransferState): RaidenTransfer {
     changedAt,
     success,
     completed,
+    secret: state.secret,
   };
+}
+
+/**
+ * Look for a BalanceProof matching given balanceHash among EnvelopeMessages in transfers
+ *
+ * @param db - Database instance
+ * @param channel - Channel key of hash
+ * @param direction - Direction of transfers to search
+ * @param balanceHash - Expected balanceHash
+ * @returns BalanceProof matching balanceHash or undefined
+ */
+export function findBalanceProofMatchingBalanceHash$(
+  db: RaidenDatabase,
+  channel: Channel,
+  direction: Direction,
+  balanceHash: Hash,
+) {
+  if (balanceHash === HashZero) return of(BalanceProofZero);
+  return defer(() =>
+    // use db.storage directly instead of db.transfers to search on historical data
+    db.find({ selector: { channel: channelUniqueKey(channel), direction } }),
+  ).pipe(
+    mergeMap(({ docs }) => from(docs as TransferStateish[])),
+    mergeMap((doc) => {
+      const transferState = decode(TransferState, doc);
+      return from([transferState.transfer, transferState.unlock, transferState.expired]);
+    }),
+    filter(isntNil),
+    map(getBalanceProofFromEnvelopeMessage),
+    // will error observable if none matching is found
+    first((bp) => createBalanceHash(bp) === balanceHash),
+  );
+}
+
+/**
+ * @param state - RaidenState or Observable of RaidenState to get transfer from
+ * @param db - Try to fetch from db if not found on state
+ * @param key - transferKey/_id to get
+ * @returns Promise to TransferState
+ */
+export async function getTransfer(
+  state: RaidenState | Observable<RaidenState>,
+  db: RaidenDatabase,
+  key: string | { secrethash: Hash; direction: Direction },
+): Promise<TransferState> {
+  if (typeof key !== 'string') key = transferKey(key);
+  if (!('address' in state)) state = await state.pipe(first()).toPromise();
+  if (key in state.transfers) return state.transfers[key];
+  return decode(TransferState, await db.get<TransferStateish>(key));
 }

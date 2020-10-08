@@ -28,14 +28,15 @@ import { Address, isntNil } from '../../utils/types';
 import { isActionOf } from '../../utils/actions';
 import { RaidenEpicDeps } from '../../types';
 import { RaidenAction } from '../../actions';
-import { channelMonitor } from '../../channels/actions';
+import { channelMonitored } from '../../channels/actions';
 import { messageSend, messageReceived } from '../../messages/actions';
 import { transferSigned } from '../../transfers/actions';
 import { RaidenState } from '../../state';
 import { pluckDistinct } from '../../utils/rx';
+import { getServerName } from '../../utils/matrix';
 import { Direction } from '../../transfers/state';
 import { matrixRoom, matrixRoomLeave, matrixPresence } from '../actions';
-import { globalRoomNames, getRoom$ } from './helpers';
+import { globalRoomNames, getRoom$, roomMatch } from './helpers';
 
 /**
  * Returns an observable which keeps inviting userId to roomId while user doesn't join
@@ -103,7 +104,7 @@ function inviteLoop$(
  * Create room (if needed) for a transfer's target, channel's partner or, as a fallback, for any
  * recipient of a messageSend.request action
  *
- * @param action$ - Observable of transferSigned|channelMonitor|messageSend.request actions
+ * @param action$ - Observable of transferSigned|channelMonitored|messageSend.request actions
  * @param state$ - Observable of RaidenStates
  * @param deps - RaidenEpicDeps members
  * @param deps.address - Our address
@@ -121,7 +122,7 @@ export const matrixCreateRoomEpic = (
   action$.pipe(
     // ensure there's a room for address of interest for each of these actions
     // matrixRoomLeave ensures a new room is created if all we had are forgotten/left
-    filter(isActionOf([transferSigned, channelMonitor, messageSend.request, matrixRoomLeave])),
+    filter(isActionOf([transferSigned, channelMonitored, messageSend.request, matrixRoomLeave])),
     map((action) => {
       let peer;
       switch (action.type) {
@@ -137,7 +138,7 @@ export const matrixCreateRoomEpic = (
           )
             peer = action.payload.message.initiator;
           break;
-        case channelMonitor.type:
+        case channelMonitored.type:
           peer = action.meta.partner;
           break;
         default:
@@ -365,9 +366,7 @@ export const matrixLeaveUnknownRoomsEpic = (
 ): Observable<RaidenAction> =>
   matrix$.pipe(
     // when matrix finishes initialization, register to matrix Room events
-    switchMap((matrix) =>
-      fromEvent<Room>(matrix, 'Room').pipe(map((room) => ({ matrix, roomId: room.roomId }))),
-    ),
+    switchMap((matrix) => fromEvent<Room>(matrix, 'Room').pipe(map((room) => ({ matrix, room })))),
     // this room may become known later for some reason, so wait a little
     delayWhen(() =>
       config$.pipe(
@@ -377,11 +376,11 @@ export const matrixLeaveUnknownRoomsEpic = (
     ),
     withLatestFrom(state$, config$),
     // filter for leave events to us
-    filter(([{ matrix, roomId }, { transport }, config]) => {
-      const room = matrix.getRoom(roomId);
+    filter(([{ matrix, room }, { transport }, config]) => {
       if (!room) return false; // room already gone while waiting
-      const globalRooms = globalRoomNames(config);
-      if (room.name && globalRooms.some((g) => room.name.match(`#${g}:`))) return false;
+      const serverName = getServerName(matrix.getHomeserverUrl());
+      if (globalRoomNames(config).some((g) => roomMatch(`#${g}:${serverName}`, room)))
+        return false;
       for (const rooms of Object.values(transport.rooms ?? {})) {
         for (const roomId of rooms) {
           if (roomId === room.roomId) return false;
@@ -389,10 +388,10 @@ export const matrixLeaveUnknownRoomsEpic = (
       }
       return true;
     }),
-    mergeMap(async ([{ matrix, roomId }]) => {
-      log.warn('Unknown room in matrix, leaving', roomId);
+    mergeMap(async ([{ matrix, room }]) => {
+      log.warn('Unknown room in matrix, leaving', room.roomId);
       return matrix
-        .leave(roomId)
+        .leave(room.roomId)
         .catch((err) => log.error('Error leaving unknown room, ignoring', err));
     }),
     ignoreElements(),

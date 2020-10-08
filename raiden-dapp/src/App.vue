@@ -2,14 +2,16 @@
   <v-app dark>
     <div id="application-wrapper">
       <router-view name="modal" />
-      <router-view name="notifications" />
+      <transition name="slide">
+        <router-view name="notifications" />
+      </transition>
       <div id="application-content">
         <app-header />
-        <v-content>
+        <v-main>
           <v-container fluid class="application__container fill-height">
             <router-view />
           </v-container>
-        </v-content>
+        </v-main>
       </div>
     </div>
     <div class="policy">
@@ -19,44 +21,29 @@
     </div>
     <offline-snackbar />
     <update-snackbar />
-    <receiving-disabled-dialog
-      :visible="showReceivingDisabled"
-      @dismiss="showReceivingDisabled = false"
-    />
+    <notification-snackbar />
   </v-app>
 </template>
 
 <script lang="ts">
-import { Component, Mixins, Watch } from 'vue-property-decorator';
-import { mapGetters } from 'vuex';
+import { Component, Mixins } from 'vue-property-decorator';
 import NavigationMixin from './mixins/navigation-mixin';
 import AppHeader from '@/components/AppHeader.vue';
 import OfflineSnackbar from '@/components/OfflineSnackbar.vue';
 import UpdateSnackbar from '@/components/UpdateSnackbar.vue';
-import ReceivingDisabledDialog from '@/components/dialogs/ReceivingDisabledDialog.vue';
+import NotificationSnackbar from '@/components/notification-panel/NotificationSnackbar.vue';
 
 @Component({
-  computed: {
-    ...mapGetters(['canReceive'])
-  },
   components: {
     AppHeader,
     OfflineSnackbar,
     UpdateSnackbar,
-    ReceivingDisabledDialog
-  }
+    NotificationSnackbar,
+  },
 })
 export default class App extends Mixins(NavigationMixin) {
-  canReceive!: boolean;
-  showReceivingDisabled = false;
-
   destroyed() {
     this.$raiden.disconnect();
-  }
-
-  @Watch('canReceive')
-  onCanReceiveChanged(canReceive: boolean | undefined) {
-    this.showReceivingDisabled = canReceive === false;
   }
 }
 </script>
@@ -64,6 +51,23 @@ export default class App extends Mixins(NavigationMixin) {
 <style lang="scss" scoped>
 @import 'scss/mixins';
 @import 'scss/colors';
+
+.slide-enter-active {
+  animation: slide-in 0.5s;
+}
+.slide-leave-active {
+  animation: slide-in 0.5s reverse;
+}
+@keyframes slide-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(100%, 0, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
 
 .v-application {
   background: $background-gradient !important;
@@ -93,8 +97,8 @@ export default class App extends Mixins(NavigationMixin) {
   }
 }
 
-.v-content {
-  height: calc(100% - 120px);
+.v-main {
+  height: calc(100% - 80px);
   margin-bottom: auto;
 }
 

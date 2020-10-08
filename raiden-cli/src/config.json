@@ -1,0 +1,12 @@
+{
+  "matrixServer": "https://transport.demo001.env.raiden.network",
+  "pfs": "https://pfs.demo001.env.raiden.network",
+  "pfsSafetyMargin": 1.1,
+  "caps": {
+    "noDelivery": true,
+    "noReceive": false,
+    "noMediate": false,
+    "webRTC": true
+  },
+  "autoSettle": true
+}

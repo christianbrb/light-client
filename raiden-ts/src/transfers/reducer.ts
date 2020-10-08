@@ -1,15 +1,14 @@
-import unset from 'lodash/fp/unset';
+import pick from 'lodash/fp/pick';
 
-import { channelKey } from '../channels/utils';
+import { channelKey, channelUniqueKey } from '../channels/utils';
 import { RaidenState, initialState } from '../state';
 import { RaidenAction } from '../actions';
 import { ChannelState } from '../channels/state';
-import { channelClose } from '../channels/actions';
-import { timed } from '../utils/types';
+import { channelClose, channelSettle } from '../channels/actions';
+import { timed, UInt } from '../utils/types';
 import { Reducer, createReducer } from '../utils/actions';
-import { getBalanceProofFromEnvelopeMessage, getMessageSigner } from '../messages/utils';
-import { getLocksroot } from './utils';
-import { TransferState, Direction } from './state';
+import { getBalanceProofFromEnvelopeMessage } from '../messages/utils';
+import { Direction } from './state';
 import {
   transferSigned,
   transferSecret,
@@ -17,14 +16,17 @@ import {
   transferUnlock,
   transferExpire,
   transferSecretReveal,
-  transferRefunded,
   transferUnlockProcessed,
   transferExpireProcessed,
-  transferClear,
-  withdrawReceive,
   transferSecretRequest,
   transferSecretRegister,
+  transferClear,
+  transferLoad,
+  withdrawMessage,
+  withdrawExpire,
+  withdrawCompleted,
 } from './actions';
+import { transferKey } from './utils';
 
 const END = { [Direction.SENT]: 'own', [Direction.RECEIVED]: 'partner' } as const;
 
@@ -33,326 +35,253 @@ function transferSecretReducer(
   state: RaidenState,
   action: transferSecret | transferSecretRegister.success,
 ): RaidenState {
-  const secrethash = action.meta.secrethash;
+  const key = transferKey(action.meta);
+  if (!(key in state.transfers)) return state;
+  const transferState = state.transfers[key];
   // store when seeing unconfirmed, but registerBlock only after confirmation
-  const registerBlock =
-    transferSecretRegister.success.is(action) && action.payload.confirmed
-      ? action.payload.txBlock
-      : state[action.meta.direction][secrethash]?.secret?.[1]?.registerBlock ?? 0;
+  if (!transferState.secret)
+    state = {
+      ...state,
+      transfers: {
+        ...state.transfers,
+        [key]: {
+          ...transferState,
+          secret: action.payload.secret,
+        },
+      },
+    };
   // don't overwrite registerBlock if secret already stored with it
   if (
-    secrethash in state[action.meta.direction] &&
-    state[action.meta.direction][secrethash].secret?.[1]?.registerBlock !== registerBlock
+    transferSecretRegister.success.is(action) &&
+    action.payload.confirmed &&
+    action.payload.txBlock !== transferState.secretRegistered?.txBlock &&
+    action.payload.txBlock < transferState.expiration
   )
     state = {
       ...state,
-      [action.meta.direction]: {
-        ...state[action.meta.direction],
-        [secrethash]: {
-          ...state[action.meta.direction][secrethash],
-          secret: timed({ value: action.payload.secret, registerBlock }),
+      transfers: {
+        ...state.transfers,
+        [key]: {
+          ...transferState,
+          secretRegistered: timed(pick(['txHash', 'txBlock'], action.payload)),
         },
       },
     };
   return state;
 }
 
-function transferSignedReducer(state: RaidenState, action: transferSigned): RaidenState {
-  const transfer = action.payload.message;
-  const lock = transfer.lock;
-  const secrethash = lock.secrethash;
-
-  const partner =
-    action.meta.direction === Direction.SENT ? transfer.recipient : getMessageSigner(transfer);
+function transferEnvelopeReducer(
+  state: RaidenState,
+  action: transferSigned | transferExpire.success | transferUnlock.success,
+): RaidenState {
+  const message = action.payload.message;
+  const secrethash = action.meta.secrethash;
+  const tKey = transferKey(action.meta);
+  const tokenNetwork = message.token_network_address;
+  const partner = action.payload.partner;
+  const cKey = channelKey({ tokenNetwork, partner });
   const end = END[action.meta.direction];
+  let channel = state.channels[cKey];
 
-  // transferSigned must be the first action, to init TransferState state
-  if (secrethash in state[action.meta.direction]) return state;
-  const key = channelKey({ tokenNetwork: transfer.token_network_address, partner });
-  let channel = state.channels[key];
-  if (!channel) return state;
-
-  const balanceProof = channel[end].balanceProof;
-  const locks = [...channel[end].locks, lock]; // append lock
-  const locksroot = getLocksroot(locks);
+  const isTransferPresent = tKey in state.transfers;
+  const field = transferUnlock.success.is(action) ? 'unlock' : 'expired';
+  // nonce must be next, otherwise we already processed this message; validation happens on epic
   if (
-    transfer.locksroot !== locksroot ||
-    // nonce must be next
-    !transfer.nonce.eq(balanceProof.nonce.add(1)) ||
-    !transfer.transferred_amount.eq(balanceProof.transferredAmount) ||
-    !transfer.locked_amount.eq(balanceProof.lockedAmount.add(lock.amount))
+    (transferSigned.is(action) && isTransferPresent) ||
+    (!transferSigned.is(action) && (!isTransferPresent || field in state.transfers[tKey])) ||
+    channel?.state !== ChannelState.open ||
+    !message.nonce.eq(channel[end].nextNonce)
   )
     return state;
+
+  let locks;
+  let transferState;
+  switch (action.type) {
+    case transferSigned.type:
+      locks = [...channel[end].locks, action.payload.message.lock]; // append lock
+      transferState = {
+        _id: tKey,
+        channel: channelUniqueKey(channel),
+        ...action.meta,
+        transfer: timed(action.payload.message),
+        fee: action.payload.fee,
+        expiration: action.payload.message.lock.expiration.toNumber(),
+        partner,
+        cleared: 0,
+      }; // initialize transfer state on transferSigned
+      break;
+    case transferUnlock.success.type:
+    case transferExpire.success.type:
+      locks = channel[end].locks.filter((l) => l.secrethash !== secrethash); // pop lock
+      transferState = {
+        [field]: timed(action.payload.message),
+        ...state.transfers[tKey], // don't overwrite previous [field]
+      }; // set unlock or expired members on existing tranferState
+      break;
+  } // switch without default helps secure against incomplete casing
 
   channel = {
     ...channel,
     [end]: {
       ...channel[end],
       locks,
-      // set current/latest channel[end].balanceProof to LockedTransfer's
-      balanceProof: getBalanceProofFromEnvelopeMessage(transfer),
+      // set current/latest channel[end].balanceProof
+      balanceProof: getBalanceProofFromEnvelopeMessage(message),
+      nextNonce: channel[end].nextNonce.add(1) as UInt<8>, // always increment nextNonce
     },
   };
-  const transferState: TransferState = {
-    transfer: timed(transfer),
-    fee: action.payload.fee,
-    partner,
-  };
 
+  // both transfer's and channel end's state changes done atomically
   return {
     ...state,
-    channels: { ...state.channels, [key]: channel },
-    [action.meta.direction]: { ...state[action.meta.direction], [secrethash]: transferState },
+    channels: { ...state.channels, [cKey]: channel },
+    transfers: {
+      ...state.transfers,
+      [tKey]: transferState,
+    },
   };
 }
 
-function transferSecretRequestedReducer(
+const fieldMap = {
+  [transferSecretRequest.type]: 'secretRequest',
+  [transferSecretReveal.type]: 'secretReveal',
+  [transferProcessed.type]: 'transferProcessed',
+  [transferUnlockProcessed.type]: 'unlockProcessed',
+  [transferExpireProcessed.type]: 'expiredProcessed',
+} as const;
+
+function transferMessagesReducer(
   state: RaidenState,
-  action: transferSecretRequest,
-): RaidenState {
-  const secrethash = action.meta.secrethash;
-  if (!(secrethash in state[action.meta.direction])) return state;
-  return {
-    ...state,
-    [action.meta.direction]: {
-      ...state[action.meta.direction],
-      [secrethash]: {
-        ...state[action.meta.direction][secrethash],
-        secretRequest: timed(action.payload.message),
+  action:
+    | transferSecretRequest
+    | transferSecretReveal
+    | transferProcessed
+    | transferUnlockProcessed
+    | transferExpireProcessed,
+) {
+  const key = transferKey(action.meta);
+  const field = fieldMap[action.type];
+  if (
+    key in state.transfers &&
+    (transferSecretRequest.is(action) || !(field in state.transfers[key]))
+  )
+    state = {
+      ...state,
+      transfers: {
+        ...state.transfers,
+        [key]: {
+          ...state.transfers[key],
+          [field]: timed(action.payload.message),
+        },
       },
-    },
-  };
-}
-
-function transferSecretReveledReducer(
-  state: RaidenState,
-  action: transferSecretReveal,
-): RaidenState {
-  const secrethash = action.meta.secrethash;
-  if (
-    !(secrethash in state[action.meta.direction]) ||
-    state[action.meta.direction][secrethash].secretReveal
-  )
-    return state;
-  return {
-    ...state,
-    [action.meta.direction]: {
-      ...state[action.meta.direction],
-      [secrethash]: {
-        ...state[action.meta.direction][secrethash],
-        secretReveal: timed(action.payload.message),
-      },
-    },
-  };
-}
-
-function transferUnlockSuccessReducer(
-  state: RaidenState,
-  action: transferUnlock.success,
-): RaidenState {
-  const unlock = action.payload.message;
-  const secrethash = action.meta.secrethash;
-  if (
-    !(secrethash in state[action.meta.direction]) ||
-    state[action.meta.direction][secrethash].unlock
-  )
-    return state;
-  const transfer = state[action.meta.direction][secrethash].transfer[1];
-
-  const partner = state[action.meta.direction][secrethash].partner;
-  const end = END[action.meta.direction];
-
-  const key = channelKey({ tokenNetwork: transfer.token_network_address, partner });
-  let channel = state.channels[key];
-  const lock = transfer.lock;
-  if (!channel || !channel[end].locks.length) return state;
-
-  const locks = channel[end].locks.filter((l) => l.secrethash !== secrethash);
-  const locksroot = getLocksroot(locks);
-  if (
-    unlock.locksroot !== locksroot ||
-    !channel[end].balanceProof.nonce.add(1).eq(unlock.nonce) || // nonce must be next
-    !unlock.transferred_amount.eq(channel[end].balanceProof.transferredAmount.add(lock.amount)) ||
-    !unlock.locked_amount.eq(channel[end].balanceProof.lockedAmount.sub(lock.amount))
-  )
-    return state;
-
-  channel = {
-    ...channel,
-    [end]: {
-      ...channel[end],
-      locks, // pop lock
-      // set current/latest channel[end].balanceProof to Unlock's
-      balanceProof: getBalanceProofFromEnvelopeMessage(unlock),
-    },
-  };
-  const transferState: TransferState = {
-    ...state[action.meta.direction][secrethash],
-    unlock: timed(unlock),
-  };
-
-  return {
-    ...state,
-    channels: { ...state.channels, [key]: channel },
-    [action.meta.direction]: { ...state[action.meta.direction], [secrethash]: transferState },
-  };
-}
-
-function transferExpireSuccessReducer(
-  state: RaidenState,
-  action: transferExpire.success,
-): RaidenState {
-  const expired = action.payload.message;
-  const secrethash = action.meta.secrethash;
-  if (
-    !(secrethash in state[action.meta.direction]) ||
-    state[action.meta.direction][secrethash].unlock || // don't accept expire if already unlocked
-    state[action.meta.direction][secrethash].lockExpired // already expired
-  )
-    return state;
-  const transfer = state[action.meta.direction][secrethash].transfer[1];
-
-  const partner = state[action.meta.direction][secrethash].partner;
-  const end = END[action.meta.direction];
-
-  const key = channelKey({ tokenNetwork: transfer.token_network_address, partner });
-  let channel = state.channels[key];
-  const lock = transfer.lock;
-  if (!channel || !channel[end].locks.length) return state;
-
-  const locks = channel[end].locks.filter((l) => l.secrethash !== secrethash);
-  const locksroot = getLocksroot(locks);
-  if (
-    expired.locksroot !== locksroot ||
-    !channel[end].balanceProof.nonce.add(1).eq(expired.nonce) || // nonce must be next
-    !expired.transferred_amount.eq(channel[end].balanceProof.transferredAmount) ||
-    !expired.locked_amount.eq(channel[end].balanceProof.lockedAmount.sub(lock.amount))
-  )
-    return state;
-
-  channel = {
-    ...channel,
-    [end]: {
-      ...channel[end],
-      locks, // pop lock
-      // set current/latest channel[end].balanceProof to LockExpired's
-      balanceProof: getBalanceProofFromEnvelopeMessage(expired),
-    },
-  };
-  const transferState: TransferState = {
-    ...state[action.meta.direction][secrethash],
-    lockExpired: timed(expired),
-  };
-
-  return {
-    ...state,
-    channels: { ...state.channels, [key]: channel },
-    [action.meta.direction]: { ...state[action.meta.direction], [secrethash]: transferState },
-  };
-}
-
-function transferStateReducer(
-  state: RaidenState,
-  action: transferProcessed | transferUnlockProcessed | transferExpireProcessed | transferRefunded,
-): RaidenState {
-  const secrethash = action.meta.secrethash;
-  if (!(secrethash in state[action.meta.direction])) return state;
-
-  let key: 'transferProcessed' | 'unlockProcessed' | 'lockExpiredProcessed' | 'refund';
-  if (transferProcessed.is(action)) {
-    key = 'transferProcessed';
-  } else if (transferUnlockProcessed.is(action)) {
-    key = 'unlockProcessed';
-  } else if (transferExpireProcessed.is(action)) {
-    key = 'lockExpiredProcessed';
-  } else if (transferRefunded.is(action)) {
-    key = 'refund';
-  } else {
-    return state;
-  }
-  if (state[action.meta.direction][secrethash][key]) return state;
-  return {
-    ...state,
-    [action.meta.direction]: {
-      ...state[action.meta.direction],
-      [secrethash]: {
-        ...state[action.meta.direction][secrethash],
-        [key]: timed(action.payload.message),
-      },
-    },
-  };
-}
-
-function channelCloseSuccessReducer(
-  state: RaidenState,
-  action: channelClose.success,
-): RaidenState {
-  let sent = state.sent;
-  for (const [secrethash, v] of Object.entries(sent)) {
-    const transfer = v.transfer[1];
-    if (
-      !transfer.channel_identifier.eq(action.payload.id) ||
-      transfer.recipient !== action.meta.partner ||
-      transfer.token_network_address !== action.meta.tokenNetwork
-    )
-      continue;
-    sent = { ...sent, [secrethash]: { ...v, channelClosed: timed(action.payload.txHash) } };
-  }
-  if (sent !== state.sent) state = { ...state, sent };
-
-  let received = state.received;
-  for (const [secrethash, v] of Object.entries(received)) {
-    const transfer = v.transfer[1];
-    if (
-      !transfer.channel_identifier.eq(action.payload.id) ||
-      transfer.recipient !== action.meta.partner ||
-      transfer.token_network_address !== action.meta.tokenNetwork
-    )
-      continue;
-    received = {
-      ...received,
-      [secrethash]: { ...v, channelClosed: timed(action.payload.txHash) },
     };
-  }
-  if (received !== state.received) state = { ...state, received };
-
   return state;
 }
 
 function transferClearReducer(state: RaidenState, action: transferClear): RaidenState {
-  const secrethash = action.meta.secrethash;
-  if (!(secrethash in state[action.meta.direction])) return state;
-  state = unset([action.meta.direction, secrethash], state);
+  const key = transferKey(action.meta);
+  if (key in state.transfers) {
+    const { [key]: _cleared, ...transfers } = state.transfers;
+    state = { ...state, transfers };
+  }
   return state;
 }
 
-function withdrawReceiveSuccessReducer(
+function transferLoadReducer(state: RaidenState, action: transferLoad): RaidenState {
+  const key = transferKey(action.meta);
+  if (!(key in state.transfers))
+    state = {
+      ...state,
+      transfers: {
+        ...state.transfers,
+        [key]: { ...action.payload, cleared: 0 },
+      },
+    };
+  return state;
+}
+
+function channelCloseSettleReducer(
   state: RaidenState,
-  action: withdrawReceive.success,
+  action: channelClose.success | channelSettle.success,
 ): RaidenState {
-  // TODO: subtract this pending withdraw request from partner's capacity (maybe some pending
-  // withdraws state), revert upon expiration or consolidate on confirmed channelWithdrawn
-  const message = action.payload.message;
-  const key = channelKey(action.meta);
-  let channel = state.channels[key];
-  if (!channel || channel.state !== ChannelState.open) return state;
-  // current own balanceProof, or zero balance proof, with some known fields filled
-  const balanceProof = channel.own.balanceProof;
-  // if it's the next nonce, update balance proof
-  if (message.nonce.eq(balanceProof.nonce.add(1)) && message.expiration.gt(state.blockNumber)) {
-    channel = {
-      ...channel,
-      own: {
-        ...channel.own,
-        balanceProof: {
-          ...balanceProof,
-          nonce: message.nonce,
+  if (!action.payload.confirmed) return state;
+  const field = channelClose.success.is(action) ? 'channelClosed' : 'channelSettled';
+  const channel = channelUniqueKey({ id: action.payload.id, ...action.meta });
+  for (const transferState of Object.values(state.transfers)) {
+    if (transferState.channel !== channel) continue;
+    state = {
+      ...state,
+      transfers: {
+        ...state.transfers,
+        [transferKey(transferState)]: {
+          ...transferState,
+          [field]: timed(pick(['txHash', 'txBlock'], action.payload)),
         },
       },
     };
-    state = { ...state, channels: { ...state.channels, [key]: channel } };
   }
   return state;
+}
+
+function withdrawReducer(
+  state: RaidenState,
+  action: withdrawMessage.request | withdrawMessage.success | withdrawExpire.success,
+): RaidenState {
+  const message = action.payload.message;
+  const key = channelKey(action.meta);
+  let channel = state.channels[key];
+
+  // messages always update sender's nonce, i.e. requestee's for confirmations, else requester's
+  const senderEnd =
+    (action.meta.direction === Direction.RECEIVED) !== withdrawMessage.success.is(action)
+      ? 'partner'
+      : 'own';
+  // nonce must be next, otherwise already processed message, skip
+  if (channel?.state !== ChannelState.open || !message.nonce.eq(channel[senderEnd].nextNonce))
+    return state;
+  channel = {
+    ...channel,
+    [senderEnd]: {
+      ...channel[senderEnd],
+      nextNonce: channel[senderEnd].nextNonce.add(1) as UInt<8>, // no BP, but increment nextNonce
+    },
+  };
+
+  // all messages are stored in 'pendingWithdraws' array on requester's/withdrawer's side
+  const withdrawerEnd = action.meta.direction === Direction.RECEIVED ? 'partner' : 'own';
+  const pendingWithdraws = [...channel[withdrawerEnd].pendingWithdraws, action.payload.message];
+  // senderEnd == withdrawerEnd for request & expiration, and the other for confirmation
+  channel = {
+    ...channel,
+    [withdrawerEnd]: {
+      ...channel[withdrawerEnd],
+      pendingWithdraws,
+    },
+  };
+
+  return { ...state, channels: { ...state.channels, [key]: channel } };
+}
+
+function withdrawCompletedReducer(state: RaidenState, action: withdrawCompleted): RaidenState {
+  const key = channelKey(action.meta);
+  let channel = state.channels[key];
+  if (channel?.state !== ChannelState.open) return state;
+
+  const end = action.meta.direction === Direction.RECEIVED ? 'partner' : 'own';
+  // filters out all withdraw messages matching meta
+  const pendingWithdraws = channel[end].pendingWithdraws.filter(
+    (req) =>
+      !req.expiration.eq(action.meta.expiration) ||
+      !req.total_withdraw.eq(action.meta.totalWithdraw),
+  );
+  channel = {
+    ...channel,
+    [end]: {
+      ...channel[end],
+      pendingWithdraws,
+    },
+  };
+  return { ...state, channels: { ...state.channels, [key]: channel } };
 }
 
 /**
@@ -360,16 +289,27 @@ function withdrawReceiveSuccessReducer(
  */
 const transfersReducer: Reducer<RaidenState, RaidenAction> = createReducer(initialState)
   .handle([transferSecret, transferSecretRegister.success], transferSecretReducer)
-  .handle(transferSigned, transferSignedReducer)
   .handle(
-    [transferProcessed, transferUnlockProcessed, transferExpireProcessed, transferRefunded],
-    transferStateReducer,
+    [transferSigned, transferUnlock.success, transferExpire.success],
+    transferEnvelopeReducer,
   )
-  .handle(transferSecretRequest, transferSecretRequestedReducer)
-  .handle(transferSecretReveal, transferSecretReveledReducer)
-  .handle(transferUnlock.success, transferUnlockSuccessReducer)
-  .handle(transferExpire.success, transferExpireSuccessReducer)
-  .handle(channelClose.success, channelCloseSuccessReducer)
+  .handle(
+    [
+      transferProcessed,
+      transferUnlockProcessed,
+      transferExpireProcessed,
+      transferSecretRequest,
+      transferSecretReveal,
+    ],
+    transferMessagesReducer,
+  )
   .handle(transferClear, transferClearReducer)
-  .handle(withdrawReceive.success, withdrawReceiveSuccessReducer);
+  .handle(transferLoad, transferLoadReducer)
+  .handle([channelClose.success, channelSettle.success], channelCloseSettleReducer)
+  .handle(
+    [withdrawMessage.request, withdrawMessage.success, withdrawExpire.success],
+    withdrawReducer,
+  )
+  .handle(withdrawCompleted, withdrawCompletedReducer);
+
 export default transfersReducer;

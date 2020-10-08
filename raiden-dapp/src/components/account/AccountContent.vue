@@ -71,12 +71,12 @@ import AddressDisplay from '@/components/AddressDisplay.vue';
 
 @Component({
   components: {
-    AddressDisplay
+    AddressDisplay,
   },
   computed: {
     ...mapState(['loading', 'defaultAccount']),
-    ...mapGetters(['balance', 'isConnected'])
-  }
+    ...mapGetters(['balance', 'isConnected']),
+  },
 })
 export default class AccountContent extends Mixins(NavigationMixin) {
   menuItems: {}[] = [];
@@ -97,7 +97,7 @@ export default class AccountContent extends Mixins(NavigationMixin) {
         ) as string,
         route: () => {
           this.navigateToBackupState();
-        }
+        },
       },
       {
         icon: 'bug.svg',
@@ -109,8 +109,8 @@ export default class AccountContent extends Mixins(NavigationMixin) {
         ) as string,
         route: () => {
           this.downloadLogs();
-        }
-      }
+        },
+      },
     ];
 
     if (this.isConnected) {
@@ -121,7 +121,7 @@ export default class AccountContent extends Mixins(NavigationMixin) {
         subtitle: this.$t('account-content.menu-items.udc.subtitle') as string,
         route: () => {
           this.navigateToUDC();
-        }
+        },
       });
 
       const mainAccount = await this.$raiden.getMainAccount();
@@ -138,7 +138,7 @@ export default class AccountContent extends Mixins(NavigationMixin) {
           ) as string,
           route: () => {
             this.navigateToRaidenAccountTransfer();
-          }
+          },
         };
 
         const withdrawal = {
@@ -151,7 +151,7 @@ export default class AccountContent extends Mixins(NavigationMixin) {
           ) as string,
           route: () => {
             this.navigateToWithdrawal();
-          }
+          },
         };
         this.menuItems.unshift(withdrawal);
         this.menuItems.unshift(raidenAccount);
@@ -171,7 +171,7 @@ export default class AccountContent extends Mixins(NavigationMixin) {
         ) as string,
         route: () => {
           this.navigateToSettings();
-        }
+        },
       });
     }
   }
@@ -179,7 +179,11 @@ export default class AccountContent extends Mixins(NavigationMixin) {
   /* istanbul ignore next */
   async downloadLogs() {
     const [lastTime, content] = await getLogsFromStore();
-    const filename = `raiden_${new Date(lastTime).toISOString()}.log`;
+    let account = '';
+    try {
+      account = `${await this.$raiden.getAccount()}_`;
+    } catch (err) {}
+    const filename = `raiden_${account}${new Date(lastTime).toISOString()}.log`;
     const file = new File([content], filename, { type: 'text/plain' });
     const url = URL.createObjectURL(file);
     const el = document.createElement('a');
@@ -197,8 +201,8 @@ export default class AccountContent extends Mixins(NavigationMixin) {
 </script>
 
 <style scoped lang="scss">
-@import '../../scss/mixins';
-@import '../../scss/colors';
+@import '@/scss/mixins';
+@import '@/scss/colors';
 
 .account-content {
   margin: 0 64px 0 64px;
